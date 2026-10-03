@@ -40,8 +40,16 @@ export type Recipe = {
   planItemId?: number;
 };
 
+/** Client locales whose names are cached besides English, keyed by output language. */
+export const NAME_LOCALES = { ru: 'ruRU' } as const;
+export type NameLocale = keyof typeof NAME_LOCALES;
+
+/** Translated names by item id and by recipe spell id. */
+export type LocalNames = { items: Record<string, string>; recipes: Record<string, string> };
+
 export type GameData = {
   build: string;
   items: Record<string, ItemInfo>;
   recipes: Recipe[];
+  localNames?: Partial<Record<NameLocale, LocalNames>>;
 };

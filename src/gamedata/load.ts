@@ -2,8 +2,16 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseCsv } from './csv.ts';
-import type { GameData, ItemInfo, Profession, Reagent, Recipe } from './types.ts';
-import { PROFESSIONS } from './types.ts';
+import type {
+  GameData,
+  ItemInfo,
+  LocalNames,
+  NameLocale,
+  Profession,
+  Reagent,
+  Recipe,
+} from './types.ts';
+import { NAME_LOCALES, PROFESSIONS } from './types.ts';
 
 const WAGO = 'https://wago.tools/db2';
 const SPELL_EFFECT_CREATE_ITEM = '24';
@@ -11,7 +19,7 @@ const ACQUIRE_ON_SKILL_LEARN = '1';
 const MAX_REAGENTS = 8;
 const BONDING_ON_PICKUP = '1';
 /** Bump when the cached shape changes. */
-const CACHE_FILE = 'gamedata-v4.json';
+const CACHE_FILE = 'gamedata-v5.json';
 /** Most common gap between learn skill and yellow among recipes that come from plans. */
 const ESTIMATED_LEARN_OFFSET = 20;
 
@@ -22,8 +30,9 @@ export function cacheDir(build: string): string {
   return join(base, 'wow-artisan', build);
 }
 
-async function fetchTable(build: string, table: string): Promise<Row[]> {
-  const response = await fetch(`${WAGO}/${table}/csv?build=${build}`);
+async function fetchTable(build: string, table: string, locale?: string): Promise<Row[]> {
+  const query = locale ? `&locale=${locale}` : '';
+  const response = await fetch(`${WAGO}/${table}/csv?build=${build}${query}`);
   if (!response.ok) throw new Error(`wago.tools ${table}@${build}: HTTP ${response.status}`);
   return parseCsv(await response.text());
 }
@@ -33,6 +42,16 @@ export async function loadGameData(build: string, refresh = false): Promise<Game
   const file = join(dir, CACHE_FILE);
   if (!refresh && existsSync(file)) return JSON.parse(readFileSync(file, 'utf8')) as GameData;
 
+  // Translations are optional: a build wago.tools has no locale for still syncs in English.
+  const locales = (Object.entries(NAME_LOCALES) as [NameLocale, string][]).map(
+    async ([lang, locale]) => {
+      const tables = await Promise.all([
+        fetchTable(build, 'ItemSparse', locale),
+        fetchTable(build, 'SpellName', locale),
+      ]).catch(() => undefined);
+      return [lang, tables] as const;
+    },
+  );
   const [abilities, names, effects, reagents, items] = await Promise.all(
     ['SkillLineAbility', 'SpellName', 'SpellEffect', 'SpellReagents', 'ItemSparse'].map((table) =>
       fetchTable(build, table),
@@ -45,6 +64,11 @@ export async function loadGameData(build: string, refresh = false): Promise<Game
     reagents: reagents ?? [],
     items: items ?? [],
   });
+  const translated: GameData['localNames'] = {};
+  for (const [lang, tables] of await Promise.all(locales)) {
+    if (tables) translated[lang] = localNames(data, ...tables);
+  }
+  if (Object.keys(translated).length > 0) data.localNames = translated;
   mkdirSync(dir, { recursive: true });
   writeFileSync(file, JSON.stringify(data));
   return data;
@@ -140,6 +164,21 @@ export function buildGameData(build: string, tables: Tables): GameData {
   }
   recipes.sort((a, b) => a.learnSkill - b.learnSkill || a.name.localeCompare(b.name));
   return { build, items, recipes };
+}
+
+/** Translated names for every known item and recipe; rows without a translation are left out. */
+export function localNames(data: GameData, items: Row[], spells: Row[]): LocalNames {
+  const result: LocalNames = { items: {}, recipes: {} };
+  for (const row of items) {
+    const id = row.ID ?? '';
+    if (row.Display_lang && data.items[id]) result.items[id] = row.Display_lang;
+  }
+  const recipeIds = new Set(data.recipes.map((r) => String(r.spellId)));
+  for (const row of spells) {
+    const id = row.ID ?? '';
+    if (row.Name_lang && recipeIds.has(id)) result.recipes[id] = row.Name_lang;
+  }
+  return result;
 }
 
 /** "Plans: Copper Chain Belt" requiring Blacksmithing 35 -> "164:Copper Chain Belt" => its id, 35. */

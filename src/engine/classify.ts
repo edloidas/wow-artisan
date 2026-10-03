@@ -30,7 +30,18 @@ export type Scans = Pick<Market, 'latestScan' | 'fullScans'>;
 export const ITEM_STATUSES = ['stable', 'volatile', 'thin', 'none'] as const;
 export type ItemStatus = (typeof ITEM_STATUSES)[number];
 
-export type Classification = { status: ItemStatus; reasons: string[] };
+/** Why a market is weaker than steady, as data; `src/i18n` turns it into text. */
+export type MarketIssue =
+  | { kind: 'nothing-listed' }
+  | { kind: 'missing-from-scan'; lastSeen: string }
+  | { kind: 'few-seen'; quantity: number; date: string }
+  | { kind: 'few-listed'; quantity: number }
+  | { kind: 'rarely-scanned'; seen: number; scans: number }
+  | { kind: 'undercut'; percent: number }
+  | { kind: 'swing'; ratio: number }
+  | { kind: 'trend'; percent: number };
+
+export type Classification = { status: ItemStatus; reasons: MarketIssue[] };
 
 const RECENT_DAYS = 7;
 export const PRESENCE_WINDOW = 7;
@@ -84,14 +95,14 @@ export function availabilityProblem(
   stats: PriceStats,
   thresholds: Thresholds,
   latestScan?: string,
-): string | undefined {
+): MarketIssue | undefined {
   if (stats.lastSeen && latestScan && stats.lastSeen < latestScan) {
-    return `missing from the latest scan (last seen ${stats.lastSeen})`;
+    return { kind: 'missing-from-scan', lastSeen: stats.lastSeen };
   }
   if (stats.quantity < thresholds.thinQuantity) {
     return stats.lastSeen
-      ? `at most ${stats.quantity} seen on ${stats.lastSeen}`
-      : `only ${stats.quantity} listed`;
+      ? { kind: 'few-seen', quantity: stats.quantity, date: stats.lastSeen }
+      : { kind: 'few-listed', quantity: stats.quantity };
   }
   return undefined;
 }
@@ -104,14 +115,14 @@ export function presenceProblem(
   stats: PriceStats,
   thresholds: Thresholds,
   fullScans: string[] | undefined,
-): string | undefined {
+): MarketIssue | undefined {
   if (!fullScans || fullScans.length === 0) return undefined;
   const window = fullScans.slice(-PRESENCE_WINDOW);
   const days = new Set((stats.history ?? []).map((day) => day.date));
   const seen = window.filter((date) => days.has(date)).length;
   const tooFew = seen < Math.min(thresholds.minSeenScans, window.length);
   if (!tooFew && seen / window.length >= thresholds.minPresence) return undefined;
-  return `seen on ${seen} of the last ${window.length} full scans`;
+  return { kind: 'rarely-scanned', seen, scans: window.length };
 }
 
 export function classify(
@@ -120,9 +131,9 @@ export function classify(
   scans: Scans = {},
 ): Classification {
   if (!stats || stats.quantity <= 0 || (stats.min === undefined && stats.median === undefined)) {
-    return { status: 'none', reasons: ['nothing listed'] };
+    return { status: 'none', reasons: [{ kind: 'nothing-listed' }] };
   }
-  const reasons: string[] = [];
+  const reasons: MarketIssue[] = [];
   let status: ItemStatus = 'stable';
 
   // Only a cheap outlier is a risk: a seller undercuts it. A cheapest listing above the
@@ -132,22 +143,21 @@ export function classify(
     const gap = (reference - stats.min) / reference;
     if (gap > thresholds.maxSpread) {
       status = 'volatile';
-      reasons.push(`cheapest is ${Math.round(gap * 100)}% under the usual price`);
+      reasons.push({ kind: 'undercut', percent: Math.round(gap * 100) });
     }
   }
 
   const swing = priceSwing(stats);
   if (swing !== undefined && swing > thresholds.maxSwing) {
     status = 'volatile';
-    reasons.push(`price swung ${swing.toFixed(1)}x over the period`);
+    reasons.push({ kind: 'swing', ratio: swing });
   }
 
   if (stats.median7d && stats.median30d) {
     const trend = stats.median7d / stats.median30d - 1;
     if (Math.abs(trend) > thresholds.maxTrend) {
       status = 'volatile';
-      const sign = trend > 0 ? '+' : '';
-      reasons.push(`7-day median ${sign}${Math.round(trend * 100)}% vs 30-day`);
+      reasons.push({ kind: 'trend', percent: Math.round(trend * 100) });
     }
   }
 

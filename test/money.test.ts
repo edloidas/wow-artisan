@@ -24,6 +24,12 @@ describe('money', () => {
     expect(parseMoney(42)).toBe(42);
   });
 
+  test('Russian coin letters format and parse', () => {
+    expect(formatMoney(65_687, true, ['з', 'с', 'м'])).toBe('6з56с87м');
+    expect(parseMoney('1з20с5м')).toBe(12_005);
+    expect(parseMoney('50с')).toBe(5_000);
+  });
+
   test('rejects amounts it cannot read', () => {
     expect(() => parseMoney('')).toThrow();
     expect(() => parseMoney('5x')).toThrow();

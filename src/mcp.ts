@@ -7,10 +7,12 @@ import { referencePrice } from './engine/classify.ts';
 import type { Holding } from './engine/materials.ts';
 import type { ListingHours } from './engine/pricer.ts';
 import { PROFESSIONS, type Profession } from './gamedata/types.ts';
+import { resolveLang } from './i18n/index.ts';
 import { parseMoney } from './money.ts';
 import { listAhledgerMarkets } from './prices/ahledger.ts';
 import {
   classificationJson,
+  localName,
   marketJson,
   marketWarnings,
   materialsJson,
@@ -18,6 +20,10 @@ import {
   recommendationsJson,
   saleJson,
 } from './serialize.ts';
+import { wowheadUrl } from './wowhead.ts';
+
+/** Wowhead links follow WOW_ARTISAN_LANG; the payload text stays English for the agent. */
+const lang = resolveLang();
 
 /** Saved scans and AHledger tables change slowly; reload an advisor after this long. */
 const ADVISOR_TTL_MS = 5 * 60_000;
@@ -91,7 +97,7 @@ server.registerTool(
   {
     title: 'Recommend profitable crafts',
     description:
-      'Recipes with a positive margin from bought or crafted materials, grouped by where the product sells and the health of its markets: steady (enough units, stable asking prices, seen on most recent full scans), vendor (sold to a merchant, no auction risk), volatile, thin (few units, missing from the latest scan, or seen on few scans) and no-market. Each row has the auction price to list at, what a merchant pays, profit if sold and if a listing expires once (losing its deposit) and the units go to a merchant, and warnings when a deposit outweighs what the auction earns. ifSold assumes every unit sells; nothing records sales, so it is not a forecast. Pass on any top-level warnings. Copper amounts: 10000 = 1g.',
+      'Recipes with a positive margin from bought or crafted materials, grouped by where the product sells and the health of its markets: steady (enough units, stable asking prices, seen on most recent full scans), vendor (sold to a merchant, no auction risk), volatile, thin (few units, missing from the latest scan, or seen on few scans) and no-market. Each row has the auction price to list at, what a merchant pays, profit if sold and if a listing expires once (losing its deposit) and the units go to a merchant, and warnings when a deposit outweighs what the auction earns. ifSold assumes every unit sells; nothing records sales, so it is not a forecast. Pass on any top-level warnings. Items and recipes carry Wowhead urls; link their names with them. Copper amounts: 10000 = 1g.',
     inputSchema: {
       profession,
       maxSkill,
@@ -124,7 +130,7 @@ server.registerTool(
   async (args) => {
     const advisor = await advisorFor(args.market);
     const { pricer, result } = advisor.recommend(scopeOf(args), parseMoney(args.minProfit ?? '1s'));
-    return json(recommendationsJson(pricer, result, args.limit ?? 8));
+    return json(recommendationsJson(pricer, result, args.limit ?? 8, lang));
   },
 );
 
@@ -133,7 +139,7 @@ server.registerTool(
   {
     title: 'Sell materials or craft them',
     description:
-      'For materials the player holds: what selling each as is brings, and the recipes that earn more than that, following chains like ore -> bar -> item. Each use has the same fields as recommend_crafts, with the holdings costing what selling them nets, plus crafts (whole crafts the holdings cover, buying the other reagents) and gain (copper above selling the holdings those crafts use). Uses compete for the same holdings, so gains do not add up. Pass on any top-level warnings.',
+      'For materials the player holds: what selling each as is brings, and the recipes that earn more than that, following chains like ore -> bar -> item. Each use has the same fields as recommend_crafts, with the holdings costing what selling them nets, plus crafts (whole crafts the holdings cover, buying the other reagents) and gain (copper above selling the holdings those crafts use). Uses compete for the same holdings, so gains do not add up. Pass on any top-level warnings. Items and recipes carry Wowhead urls; link their names with them.',
     inputSchema: {
       profession,
       items: z
@@ -183,7 +189,7 @@ server.registerTool(
         }));
     if (holdings.length === 0) throw new Error('Pass items, or fromInventory: true');
     const { pricer, report } = advisor.materials(scope, holdings, parseMoney(args.minProfit ?? 1));
-    return json(materialsJson(pricer, report, args.limit ?? 5));
+    return json(materialsJson(pricer, report, args.limit ?? 5, lang));
   },
 );
 
@@ -209,7 +215,13 @@ server.registerTool(
     return json({
       market: marketJson(advisor.market),
       warnings: marketWarnings(advisor.market),
-      item: { itemId, name: pricer.name(itemId), info: advisor.game.items[itemId] },
+      item: {
+        itemId,
+        name: pricer.name(itemId),
+        localName: localName(pricer, itemId, lang),
+        url: wowheadUrl('item', itemId, lang),
+        info: advisor.game.items[itemId],
+      },
       stats: stats ?? null,
       usualPrice: referencePrice(stats),
       status: classificationJson(pricer.classification(itemId)),
@@ -217,7 +229,8 @@ server.registerTool(
         unit: cost.unit === undefined ? undefined : Math.round(cost.unit),
         source: cost.source,
         recipe: cost.recipe?.name,
-        materials: cost.parts ? partsJson(pricer, cost.parts) : undefined,
+        recipeUrl: cost.recipe && wowheadUrl('spell', cost.recipe.spellId, lang),
+        materials: cost.parts ? partsJson(pricer, cost.parts, lang) : undefined,
       },
       sell: saleJson(sale),
     });
@@ -228,7 +241,7 @@ server.registerTool(
   'find_items',
   {
     title: 'Find items by name',
-    description: 'Search item names; returns ids usable in the other tools.',
+    description: 'Search item names, English or translated; returns ids usable in the other tools.',
     inputSchema: {
       query: z.string().describe('Part of the item name, or an id'),
       limit: z.number().int().positive().max(50).optional(),
@@ -237,7 +250,14 @@ server.registerTool(
   },
   async (args) => {
     const advisor = await advisorFor(undefined);
-    return json(advisor.findItems(args.query, args.limit ?? 10));
+    const pricer = advisor.pricer({ profession: 'blacksmithing' });
+    return json(
+      advisor.findItems(args.query, args.limit ?? 10).map((item) => ({
+        ...item,
+        localName: localName(pricer, item.itemId, lang),
+        url: wowheadUrl('item', item.itemId, lang),
+      })),
+    );
   },
 );
 

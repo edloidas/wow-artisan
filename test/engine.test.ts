@@ -1,13 +1,32 @@
 import { describe, expect, test } from 'bun:test';
-import { buyPrice, classify, DEFAULT_THRESHOLDS, referencePrice } from '../src/engine/classify.ts';
+import {
+  buyPrice,
+  type Classification,
+  classify as classifyIssues,
+  DEFAULT_THRESHOLDS,
+  referencePrice,
+} from '../src/engine/classify.ts';
 import { type Holding, heldUses, holdingSale } from '../src/engine/materials.ts';
 import { auctionParts, type ListingHours, Pricer } from '../src/engine/pricer.ts';
-import { recommend, selectRecipes } from '../src/engine/recommend.ts';
-import { buildGameData } from '../src/gamedata/load.ts';
+import { type Evaluation, recommend, selectRecipes } from '../src/engine/recommend.ts';
+import { buildGameData, localNames } from '../src/gamedata/load.ts';
 import type { GameData, ItemInfo, Recipe } from '../src/gamedata/types.ts';
 import { tradeSupplyPrices } from '../src/gamedata/vendors.ts';
+import { en, reasonText } from '../src/i18n/index.ts';
 import type { Market, PriceStats } from '../src/prices/types.ts';
 import { evaluationJson } from '../src/serialize.ts';
+
+/** Classification with its reasons rendered as the English CLI shows them. */
+function classify(...args: Parameters<typeof classifyIssues>): Omit<Classification, 'reasons'> & {
+  reasons: string[];
+} {
+  const { status, reasons } = classifyIssues(...args);
+  return { status, reasons: reasons.map(en.issue) };
+}
+
+function reasonsOf(p: Pricer, e: Evaluation | undefined): string[] | undefined {
+  return e?.reasons.map((r) => reasonText(en, (id) => p.name(id), r));
+}
 
 const ORE = 1;
 const BAR = 2;
@@ -223,7 +242,7 @@ describe('recommend', () => {
       selectRecipes(game.recipes, { profession: 'blacksmithing', maxSkill: 100 }),
       0,
     );
-    expect(result.groups.thin.map((e) => [e.recipe.name, e.reasons])).toEqual([
+    expect(result.groups.thin.map((e) => [e.recipe.name, reasonsOf(p, e)])).toEqual([
       ['Sword', ['Bar: missing from the latest scan (last seen 2026-09-27)']],
     ]);
   });
@@ -392,7 +411,7 @@ describe('sale routes and listing risk', () => {
     // 1000 * 0.95 = 950 nets under the 1000 vendor price; a tie would go to the vendor too
     const { p, result } = evaluate({ median: 1000, min: 1000, quantity: 50 });
     expect(p.sale(PLATE)).toMatchObject({ via: 'vendor', unit: 1000, auctionGross: 1000 });
-    expect(result.groups.vendor[0]?.reasons).toEqual([
+    expect(reasonsOf(p, result.groups.vendor[0])).toEqual([
       "product: auction nets 9s50c/u, under the vendor's 10s00c/u",
     ]);
   });
@@ -407,7 +426,7 @@ describe('sale routes and listing risk', () => {
   test('an auction premium smaller than one deposit is flagged on a steady row', () => {
     // nets 1045 vs vendor 1000; a 2h deposit is 50 per unit
     const { result } = evaluate({ median: 1100, min: 1100, quantity: 50 }, 100, 2);
-    expect(result.groups.steady[0]?.warnings).toEqual([
+    expect(result.groups.steady[0]?.warnings.map(en.warning)).toEqual([
       'vendor pays 10s00c/u; the auction adds less than one ~50c/u deposit',
     ]);
   });
@@ -415,7 +434,7 @@ describe('sale routes and listing risk', () => {
   test('a deposit above the profit of a sale is flagged', () => {
     // cost 2 * 480 = 960, nets 1045: profit 85 against a 600 deposit
     const { result } = evaluate({ median: 1100, min: 1100, quantity: 50 }, 480);
-    expect(result.groups.steady[0]?.warnings).toEqual([
+    expect(result.groups.steady[0]?.warnings.map(en.warning)).toEqual([
       'one expired listing (~6s00c deposit) costs more than a sale earns',
     ]);
   });
@@ -510,6 +529,45 @@ describe('trainer and plan recipes', () => {
       selectRecipes(data.recipes, { profession: 'blacksmithing', trainerOnly }).map((r) => r.name);
     expect(names(false)).toContain('Bronze Poniard');
     expect(names(true)).toEqual(['Iron Spaulders', 'Copper Belt']);
+  });
+});
+
+describe('translated names', () => {
+  const sword = game.recipes.find((r) => r.name === 'Sword') as Recipe;
+  const translated: GameData = {
+    ...game,
+    localNames: {
+      ru: localNames(
+        game,
+        [
+          { ID: String(BAR), Display_lang: 'Слиток' },
+          { ID: '999', Display_lang: 'Чужой предмет' },
+        ],
+        [{ ID: String(sword.spellId), Name_lang: 'Меч' }],
+      ),
+    },
+  };
+  const p = new Pricer({
+    game: translated,
+    market,
+    vendorBuy: new Map(),
+    thresholds: DEFAULT_THRESHOLDS,
+    recipes: translated.recipes,
+  });
+
+  test('only known items and recipes keep a translation', () => {
+    expect(translated.localNames?.ru).toEqual({
+      items: { [BAR]: 'Слиток' },
+      recipes: { [sword.spellId]: 'Меч' },
+    });
+  });
+
+  test('names fall back to English where no translation is cached', () => {
+    expect(p.name(BAR, 'ru')).toBe('Слиток');
+    expect(p.name(BAR)).toBe('Bar');
+    expect(p.name(ORE, 'ru')).toBe('Ore');
+    expect(p.recipeName(sword, 'ru')).toBe('Меч');
+    expect(p.recipeName(sword, 'en')).toBe('Sword');
   });
 });
 

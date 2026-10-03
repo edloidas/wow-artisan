@@ -1,4 +1,4 @@
-import type { GameData, Recipe } from '../gamedata/types.ts';
+import type { GameData, NameLocale, Recipe } from '../gamedata/types.ts';
 import type { Market } from '../prices/types.ts';
 import { buyPrice, type Classification, classify, sellPrice, type Thresholds } from './classify.ts';
 
@@ -70,13 +70,23 @@ export class Pricer {
     }
   }
 
-  name(itemId: number): string {
+  /** The item's name; a translation when one is cached for `lang`, else the English one. */
+  name(itemId: number, lang?: NameLocale | 'en'): string {
+    const local =
+      lang === undefined || lang === 'en' ? undefined : this.ctx.game.localNames?.[lang];
+    const translated = local?.items[itemId];
+    if (translated) return translated;
     const fromGame = this.ctx.game.items[itemId]?.name;
     if (fromGame) return fromGame;
     const fromInventory = this.ctx.names?.get(itemId);
     if (fromInventory) return fromInventory;
     const producer = this.ctx.game.recipes.find((r) => r.output.itemId === itemId);
     return producer?.name ?? `item:${itemId}`;
+  }
+
+  recipeName(recipe: Recipe, lang?: NameLocale | 'en'): string {
+    if (lang === undefined || lang === 'en') return recipe.name;
+    return this.ctx.game.localNames?.[lang]?.recipes[recipe.spellId] ?? recipe.name;
   }
 
   vendorSell(itemId: number): number {

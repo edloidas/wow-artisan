@@ -148,25 +148,32 @@ export class Advisor {
       .sort((a, b) => b.quantity - a.quantity);
   }
 
-  /** Item ids by exact id or case-insensitive name match, exact names first. */
+  /**
+   * Item ids by exact id or case-insensitive match on the English or a translated name, exact
+   * names first. Results carry the English name.
+   */
   findItems(query: string, limit = 10): { itemId: number; name: string }[] {
     if (/^\d+$/.test(query.trim())) {
       const itemId = Number(query);
       return [{ itemId, name: this.pricer({ profession: 'blacksmithing' }).name(itemId) }];
     }
-    const needle = query.trim().toLowerCase();
+    const needle = normalize(query);
     const names = new Map<number, string>();
     for (const [id, item] of Object.entries(this.game.items)) names.set(Number(id), item.name);
     for (const [id, name] of this.inventory?.names ?? []) if (!names.get(id)) names.set(id, name);
-    return [...names]
-      .filter(([, name]) => name.toLowerCase().includes(needle))
-      .sort(
-        ([, a], [, b]) =>
-          Number(b.toLowerCase() === needle) - Number(a.toLowerCase() === needle) ||
-          a.length - b.length,
-      )
-      .slice(0, limit)
-      .map(([itemId, name]) => ({ itemId, name }));
+    const candidates: [number, string][] = [...names];
+    for (const local of Object.values(this.game.localNames ?? {})) {
+      for (const [id, name] of Object.entries(local.items)) candidates.push([Number(id), name]);
+    }
+    const found = new Map<number, string>();
+    for (const [itemId] of candidates
+      .map(([id, name]): [number, string] => [id, normalize(name)])
+      .filter(([, name]) => name.includes(needle))
+      .sort(([, a], [, b]) => Number(b === needle) - Number(a === needle) || a.length - b.length)) {
+      if (found.size >= limit) break;
+      if (!found.has(itemId)) found.set(itemId, names.get(itemId) ?? `item:${itemId}`);
+    }
+    return [...found].map(([itemId, name]) => ({ itemId, name }));
   }
 
   resolveItem(query: string): number {
@@ -199,6 +206,11 @@ async function openMarket(spec: string, auctionator: AuctionatorData | undefined
     return auctionatorMarket(auctionator, id || undefined);
   }
   throw new Error(`Unknown market '${spec}'; use auctionator[:realm] or ahledger:<id>`);
+}
+
+/** Case-insensitive, and Russian ё matches е: players type either. */
+function normalize(name: string): string {
+  return name.trim().toLowerCase().replaceAll('ё', 'е');
 }
 
 export function isProfession(value: string): value is Profession {

@@ -1,6 +1,5 @@
 import type { Profession, Recipe } from '../gamedata/types.ts';
-import { formatMoney } from '../money.ts';
-import { availabilityProblem, type ItemStatus, worstStatus } from './classify.ts';
+import { availabilityProblem, type ItemStatus, type MarketIssue, worstStatus } from './classify.ts';
 import { AUCTION_CUT, auctionParts, type Part, type Pricer, type SaleQuote } from './pricer.ts';
 
 /**
@@ -9,6 +8,17 @@ import { AUCTION_CUT, auctionParts, type Part, type Pricer, type SaleQuote } fro
  * sells: no source records sales, so "steady" means steady asking prices and enough units.
  */
 export type Category = 'steady' | 'vendor' | 'volatile' | 'thin' | 'no-market';
+
+export type SaleIssue =
+  | { kind: 'unsellable' }
+  | { kind: 'vendor-beats-auction'; auctionNet: number; vendor: number };
+
+/** A weak market behind a category: the product's, or a bought reagent's by item id. */
+export type Reason = { item: 'product' | number; issue: MarketIssue | SaleIssue };
+
+export type ListingWarning =
+  | { kind: 'deposit-exceeds-sale'; deposit: number }
+  | { kind: 'premium-under-deposit'; vendor: number; deposit: number };
 
 export type RecipeFilter = {
   profession: Profession;
@@ -46,9 +56,9 @@ export type Evaluation = {
   depositEstimate?: number;
   category: Category;
   /** Why the markets behind the category are weak. */
-  reasons: string[];
+  reasons: Reason[];
   /** Deposit risks of listing, shown whatever the category. */
-  warnings: string[];
+  warnings: ListingWarning[];
 };
 
 export type Recommendations = {
@@ -79,15 +89,15 @@ export function evaluateRecipe(pricer: Pricer, recipe: Recipe): Evaluation | und
   // Reagents are bought at today's price, so their history doesn't matter; only whether
   // the market holds enough of them does.
   const materialStatuses: ItemStatus[] = [];
-  const reasons: string[] = [];
+  const reasons: Reason[] = [];
   for (const part of auctionParts(parts)) {
     const stats = pricer.ctx.market.prices.get(part.itemId);
-    const problem = stats
+    const problem: MarketIssue | undefined = stats
       ? availabilityProblem(stats, pricer.ctx.thresholds, pricer.ctx.market.latestScan)
-      : 'nothing listed';
+      : { kind: 'nothing-listed' };
     if (problem) {
       materialStatuses.push('thin');
-      reasons.push(`${pricer.name(part.itemId)}: ${problem}`);
+      reasons.push({ item: part.itemId, issue: problem });
     }
   }
 
@@ -100,10 +110,10 @@ export function evaluateRecipe(pricer: Pricer, recipe: Recipe): Evaluation | und
     ifVendored: sale.vendor * count - cost,
     breakEven: cost / count / (1 - AUCTION_CUT),
     reasons,
-    warnings: [] as string[],
+    warnings: [] as ListingWarning[],
   };
   if (sale.unit === undefined) {
-    reasons.unshift('product: nothing listed, no vendor price');
+    reasons.unshift({ item: 'product', issue: { kind: 'unsellable' } });
     return { ...base, category: 'no-market' };
   }
   const ifSold = sale.unit * count - cost;
@@ -112,9 +122,10 @@ export function evaluateRecipe(pricer: Pricer, recipe: Recipe): Evaluation | und
 
   if (sale.via === 'vendor') {
     if (sale.auctionNet !== undefined) {
-      reasons.unshift(
-        `product: auction nets ${formatMoney(sale.auctionNet)}/u, under the vendor's ${formatMoney(sale.vendor)}/u`,
-      );
+      reasons.unshift({
+        item: 'product',
+        issue: { kind: 'vendor-beats-auction', auctionNet: sale.auctionNet, vendor: sale.vendor },
+      });
     }
     return evaluation;
   }
@@ -124,7 +135,9 @@ export function evaluateRecipe(pricer: Pricer, recipe: Recipe): Evaluation | und
   evaluation.ifUnsold = evaluation.ifVendored - (deposit ?? 0) * count;
   evaluation.warnings = listingWarnings(evaluation, deposit);
   if (sale.classification.status !== 'stable') {
-    reasons.unshift(...sale.classification.reasons.map((r) => `product: ${r}`));
+    reasons.unshift(
+      ...sale.classification.reasons.map((issue): Reason => ({ item: 'product', issue })),
+    );
   }
   evaluation.category = categoryOf(worstStatus([sale.classification.status, ...materialStatuses]));
   return evaluation;
@@ -134,17 +147,15 @@ export function evaluateRecipe(pricer: Pricer, recipe: Recipe): Evaluation | und
  * Deposit risks that only some auction rows carry. The loss from an unsold craft is in
  * `ifUnsold`; crafted gear vendors far under cost, so a warning would mark every row.
  */
-function listingWarnings(e: Evaluation, deposit: number | undefined): string[] {
+function listingWarnings(e: Evaluation, deposit: number | undefined): ListingWarning[] {
   const ifSold = e.ifSold ?? 0;
   if (deposit === undefined || ifSold <= 0) return [];
   const listing = deposit * e.recipe.output.count;
   if (listing >= ifSold) {
-    return [`one expired listing (~${formatMoney(listing)} deposit) costs more than a sale earns`];
+    return [{ kind: 'deposit-exceeds-sale', deposit: listing }];
   }
   if (e.ifVendored > 0 && (e.sale.auctionNet ?? 0) - e.sale.vendor < deposit) {
-    return [
-      `vendor pays ${formatMoney(e.sale.vendor)}/u; the auction adds less than one ~${formatMoney(deposit)}/u deposit`,
-    ];
+    return [{ kind: 'premium-under-deposit', vendor: e.sale.vendor, deposit }];
   }
   return [];
 }

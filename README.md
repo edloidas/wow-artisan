@@ -16,8 +16,8 @@ bun install
 bun run cli sync          # download recipes and items for your client build
 ```
 
-The client build is detected from `.build.info` in your WoW folder. Game data is
-cached under `~/.cache/wow-artisan/<build>/`.
+The client build is detected from `.build.info` in your WoW folder. Game data,
+with Russian names, is cached under `~/.cache/wow-artisan/<build>/`.
 
 ## Usage
 
@@ -44,6 +44,12 @@ bun run cli recipes -p blacksmithing -m ahledger:forever.normal.alliance.us
 
 Professions: `blacksmithing`, `mining`. Add `--json` for machine-readable output.
 `bun run cli --help` lists every option.
+
+`--lang ru` (or `WOW_ARTISAN_LANG=ru`) prints the output in Russian, with item
+and recipe names from the client's ruRU data; `--have` takes Russian names too.
+In a terminal that supports hyperlinks, recipe and item names link to Wowhead,
+in the output language. JSON text stays English, with Wowhead `url` fields on
+items and recipes and a `localName` beside `name` for a non-English language.
 
 ### MCP server
 
@@ -138,6 +144,7 @@ Tools: `recommend_crafts`, `evaluate_materials`, `item_price`, `find_items`,
 | Variable | Default |
 | --- | --- |
 | `WOW_ARTISAN_MARKET` | `auctionator` |
+| `WOW_ARTISAN_LANG` | `en`; `ru` for Russian output and Wowhead links |
 | `WOW_ARTISAN_WOW_DIR` | `/Applications/World of Warcraft`, or the Windows install path |
 | `WOW_ARTISAN_FLAVOR` | the client folder whose version is 1.60.x, e.g. `_classic_beta_` |
 | `WOW_ARTISAN_ACCOUNT` | the account with the most recently written SavedVariables |

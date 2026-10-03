@@ -9,12 +9,16 @@ import {
   type SaleQuote,
 } from './engine/pricer.ts';
 import type { Category, Evaluation, Recommendations } from './engine/recommend.ts';
+import { en, type Lang, reasonText } from './i18n/index.ts';
 import { marketFreshness } from './prices/freshness.ts';
 import type { Market } from './prices/types.ts';
+import { wowheadUrl } from './wowhead.ts';
 
 export type MaterialLine = {
   itemId: number;
   name: string;
+  localName?: string;
+  url: string;
   count: number;
   unitCost?: number;
   source: CostQuote['source'];
@@ -41,31 +45,48 @@ export function marketWarnings(market: Market, now = new Date()): string[] {
     : [];
 }
 
+/** The translated name for a non-English `lang`, when one is cached; English stays in `name`. */
+export function localName(pricer: Pricer, itemId: number, lang: Lang): string | undefined {
+  return lang === 'en' ? undefined : pricer.ctx.game.localNames?.[lang]?.items[itemId];
+}
+
+function recipeLocalName(pricer: Pricer, e: Evaluation, lang: Lang): string | undefined {
+  return lang === 'en' ? undefined : pricer.ctx.game.localNames?.[lang]?.recipes[e.recipe.spellId];
+}
+
 function copper(value: number | undefined): number | undefined {
   return value === undefined ? undefined : Math.round(value);
 }
 
-export function partsJson(pricer: Pricer, parts: Part[]): MaterialLine[] {
+export function partsJson(pricer: Pricer, parts: Part[], lang: Lang = 'en'): MaterialLine[] {
   return parts.map((part) => {
     const line: MaterialLine = {
       itemId: part.itemId,
       name: pricer.name(part.itemId),
+      url: wowheadUrl('item', part.itemId, lang),
       count: part.count,
       source: part.quote.source,
     };
+    const local = localName(pricer, part.itemId, lang);
+    if (local) line.localName = local;
     if (part.quote.unit !== undefined) line.unitCost = Math.round(part.quote.unit);
     if (part.quote.recipe) line.craftedWith = part.quote.recipe.name;
     return line;
   });
 }
 
-export function evaluationJson(pricer: Pricer, e: Evaluation) {
+/** JSON is for agents and scripts: its text stays English, only Wowhead links follow `lang`. */
+export function evaluationJson(pricer: Pricer, e: Evaluation, lang: Lang = 'en') {
   return {
     recipe: e.recipe.name,
+    recipeLocalName: recipeLocalName(pricer, e, lang),
     spellId: e.recipe.spellId,
+    recipeUrl: wowheadUrl('spell', e.recipe.spellId, lang),
     product: {
       itemId: e.recipe.output.itemId,
       name: pricer.name(e.recipe.output.itemId),
+      localName: localName(pricer, e.recipe.output.itemId, lang),
+      url: wowheadUrl('item', e.recipe.output.itemId, lang),
       count: e.recipe.output.count,
     },
     learnSkill: e.recipe.learnSkill,
@@ -86,18 +107,23 @@ export function evaluationJson(pricer: Pricer, e: Evaluation) {
     marginRatio: e.marginRatio === undefined ? undefined : Math.round(e.marginRatio * 100) / 100,
     breakEven: e.category === 'vendor' ? undefined : Math.ceil(e.breakEven),
     depositEstimate: copper(e.depositEstimate),
-    warnings: e.warnings,
+    warnings: e.warnings.map(en.warning),
     productMarket: supplyJson(pricer, e.recipe.output.itemId),
-    reasons: e.reasons,
-    materials: partsJson(pricer, e.parts),
+    reasons: e.reasons.map((r) => reasonText(en, (id) => pricer.name(id), r)),
+    materials: partsJson(pricer, e.parts, lang),
   };
 }
 
-export function recommendationsJson(pricer: Pricer, r: Recommendations, limit: number) {
+export function recommendationsJson(
+  pricer: Pricer,
+  r: Recommendations,
+  limit: number,
+  lang: Lang = 'en',
+) {
   const groups = Object.fromEntries(
     (Object.entries(r.groups) as [Category, Evaluation[]][]).map(([category, list]) => [
       category,
-      { total: list.length, top: list.slice(0, limit).map((e) => evaluationJson(pricer, e)) },
+      { total: list.length, top: list.slice(0, limit).map((e) => evaluationJson(pricer, e, lang)) },
     ]),
   );
   const hours = pricer.listingHours;
@@ -140,22 +166,29 @@ export function supplyJson(pricer: Pricer, itemId: number) {
 }
 
 export function classificationJson(c: Classification) {
-  return { status: c.status, reasons: c.reasons };
+  return { status: c.status, reasons: c.reasons.map(en.issue) };
 }
 
-export function materialsJson(pricer: Pricer, report: MaterialsReport, limit: number) {
+export function materialsJson(
+  pricer: Pricer,
+  report: MaterialsReport,
+  limit: number,
+  lang: Lang = 'en',
+) {
   const groups = Object.fromEntries(
     (Object.entries(report.groups) as [Category, HeldUse[]][]).map(([category, list]) => [
       category,
       {
         total: list.length,
         top: list.slice(0, limit).map((use) => ({
-          ...evaluationJson(pricer, use),
+          ...evaluationJson(pricer, use, lang),
           crafts: use.crafts,
           gain: Math.round(use.gain),
           consumes: [...use.consumes].map(([itemId, perCraft]) => ({
             itemId,
             name: pricer.name(itemId),
+            localName: localName(pricer, itemId, lang),
+            url: wowheadUrl('item', itemId, lang),
             perCraft,
             total: perCraft * use.crafts,
           })),
@@ -170,6 +203,8 @@ export function materialsJson(pricer: Pricer, report: MaterialsReport, limit: nu
     holdings: report.holdings.map((h) => ({
       itemId: h.itemId,
       name: h.name,
+      localName: localName(pricer, h.itemId, lang),
+      url: wowheadUrl('item', h.itemId, lang),
       quantity: h.quantity,
       marketUnits: h.marketQuantity,
       marketUnitsAre: h.lastSeen ? 'most seen on lastSeen' : 'listed now',
