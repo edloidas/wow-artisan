@@ -75,6 +75,20 @@ path to `bun` (`which bun`):
 }
 ```
 
+Over Streamable HTTP instead of stdio, for a host that connects by URL or a
+server shared by several clients:
+
+```bash
+bun run mcp --http                 # http://127.0.0.1:3000/mcp
+claude mcp add --transport http wow-artisan http://127.0.0.1:3000/mcp
+```
+
+`--port` and `--host` change where it listens. On a loopback host it answers
+only requests addressed to `localhost`, `127.0.0.1`, `[::1]` or the address it
+is bound to, and from no web page but one on those hosts, so a site can't reach
+it through DNS rebinding. Any other `--host` drops that check and
+exposes the server without authentication to whoever can reach the address.
+
 Tools: `recommend_crafts`, `evaluate_materials`, `item_price`, `find_items`,
 `list_markets`. All are read-only. Each returns its JSON both as
 `structuredContent` and as text. In hosts that support MCP Apps, such as Claude
