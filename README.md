@@ -105,9 +105,12 @@ Tools: `recommend_crafts`, `evaluate_materials`, `item_price`, `find_items`,
   `--swing`, `--trend`.
 - **Units** on your own scans are the most units Auctionator saw on the last day
   it scanned the item, not what is listed now; the output says which day.
-- **Materials**: compares selling with each recipe that uses the material,
-  following chains such as ore → bar → item. Crafts are capped at the product's
-  market units, a rough bound, and the rest is valued as sold.
+- **Materials**: your materials cost what selling them nets, and each recipe that
+  uses them, through intermediates such as ore → bar → item, is evaluated like
+  `recipes`. Its gain is what a craft earns above selling what it uses; recipes
+  that don't beat selling are left out. Crafts count only what you hold, buying
+  the other reagents. Uses compete for the same materials, so their totals don't
+  add up.
 
 ## Caveats
 

@@ -13,7 +13,7 @@ import {
   classificationJson,
   marketJson,
   marketWarnings,
-  materialReportJson,
+  materialsJson,
   partsJson,
   recommendationsJson,
   saleJson,
@@ -133,7 +133,7 @@ server.registerTool(
   {
     title: 'Sell materials or craft them',
     description:
-      "For materials the player holds, compares selling them as is with the best recipes that use them (following chains like ore -> bar -> item). Craft counts are capped by what the product's market lists.",
+      'For materials the player holds: what selling each as is brings, and the recipes that earn more than that, following chains like ore -> bar -> item. Each use has the same fields as recommend_crafts, with the holdings costing what selling them nets, plus crafts (whole crafts the holdings cover, buying the other reagents) and gain (copper above selling the holdings those crafts use). Uses compete for the same holdings, so gains do not add up. Pass on any top-level warnings.',
     inputSchema: {
       profession,
       items: z
@@ -154,6 +154,13 @@ server.registerTool(
       maxSkill,
       craftWith,
       trainerOnly,
+      listingHours,
+      minProfit: z
+        .union([z.string(), z.number()])
+        .optional()
+        .describe(
+          "Minimum gain per craft over selling the holdings, e.g. '10s', or copper (default 1)",
+        ),
       market,
       limit: z
         .number()
@@ -161,7 +168,7 @@ server.registerTool(
         .positive()
         .max(20)
         .optional()
-        .describe('Uses per material (default 5)'),
+        .describe('Uses per category (default 5)'),
     },
     annotations: { readOnlyHint: true, openWorldHint: true },
   },
@@ -175,11 +182,8 @@ server.registerTool(
           quantity,
         }));
     if (holdings.length === 0) throw new Error('Pass items, or fromInventory: true');
-    return json({
-      market: marketJson(advisor.market),
-      warnings: marketWarnings(advisor.market),
-      materials: advisor.materials(scope, holdings, args.limit ?? 5).map(materialReportJson),
-    });
+    const { pricer, report } = advisor.materials(scope, holdings, parseMoney(args.minProfit ?? 1));
+    return json(materialsJson(pricer, report, args.limit ?? 5));
   },
 );
 

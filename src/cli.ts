@@ -2,7 +2,7 @@
 import { parseArgs } from 'node:util';
 import { Advisor, isProfession, type Scope } from './advisor.ts';
 import type { Thresholds } from './engine/classify.ts';
-import type { Holding, MaterialReport } from './engine/materials.ts';
+import type { HeldUse, Holding, HoldingSale } from './engine/materials.ts';
 import { DEPOSIT_RATES, isListingHours, type Pricer } from './engine/pricer.ts';
 import type { Category, Evaluation } from './engine/recommend.ts';
 import { loadGameData } from './gamedata/load.ts';
@@ -10,14 +10,14 @@ import type { Profession } from './gamedata/types.ts';
 import { formatMoney, parseMoney } from './money.ts';
 import { listAhledgerMarkets } from './prices/ahledger.ts';
 import { marketFreshness } from './prices/freshness.ts';
-import { materialReportJson, recommendationsJson } from './serialize.ts';
+import { materialsJson, recommendationsJson } from './serialize.ts';
 import { FALLBACK_BUILD, findInstallation } from './wow.ts';
 
 const USAGE = `wow-artisan: World of Warcraft Forever craft advisor
 
 Usage:
   wow-artisan recipes   -p <profession> [-s <skill>] [--min-profit 50s] [options]
-  wow-artisan materials -p <profession> (--have "Copper Bar:200" ... | --inventory) [options]
+  wow-artisan materials -p <profession> (--have "Copper Bar:200" ... | --inventory) [--min-profit 10s] [options]
   wow-artisan markets
   wow-artisan sync      [--build <version>]
 
@@ -28,7 +28,7 @@ Options:
   -s, --skill <n>           your skill: hide recipes that need more to learn
       --min-skill <n>       hide recipes learnable below this skill
       --trainer-only        hide recipes taught by plans, keep trainer recipes
-      --min-profit <money>  e.g. 50s, 1g20s, 2g (default 1s)
+      --min-profit <money>  e.g. 50s, 1g20s, 2g (default 1s; materials: gain over selling, default 1c)
       --hours <2|8|24>      listing duration for deposits (default: Auctionator's, else 24)
       --craft-with <name>   another profession that may make intermediates (repeatable)
   -m, --market <spec>       auctionator[:realm] (default) or ahledger:<market id>
@@ -123,7 +123,11 @@ async function main(): Promise<void> {
       `${result.considered} recipes in range; skipped: ${result.unpriced} unpriced reagents, ${result.bound} bind on pickup; min profit ${formatMoney(minProfit)}\n`,
     );
     for (const [category, list] of Object.entries(result.groups) as [Category, Evaluation[]][]) {
-      printGroup(pricer, category, list, limit, values.details ?? false);
+      printGroup(pricer, category, list, {
+        limit,
+        details: values.details ?? false,
+        columns: columnsFor(pricer, category),
+      });
     }
     printRecipeNotes(advisor, pricer);
     return;
@@ -134,13 +138,29 @@ async function main(): Promise<void> {
       ? advisor.ownedMaterials(scope)
       : (values.have ?? []).map((spec) => parseHolding(advisor, spec));
     if (holdings.length === 0) throw new Error('Nothing to evaluate: pass --have or --inventory');
-    const reports = advisor.materials(scope, holdings, limit);
+    const minProfit = parseMoney(values['min-profit'] ?? '1c');
+    const { pricer, report } = advisor.materials(scope, holdings, minProfit);
     if (values.json) {
-      console.log(JSON.stringify(reports.map(materialReportJson), null, 2));
+      console.log(JSON.stringify(materialsJson(pricer, report, limit), null, 2));
       return;
     }
     printHeader(advisor, scope);
-    for (const report of reports) printMaterial(report);
+    printHoldings(report.holdings);
+    const groups = Object.entries(report.groups) as [Category, HeldUse[]][];
+    if (groups.every(([, list]) => list.length === 0)) {
+      console.log(`No recipe in scope earns ${formatMoney(minProfit)} or more above selling them.`);
+      return;
+    }
+    for (const [category, list] of groups) {
+      printGroup(pricer, category, list, {
+        limit,
+        details: values.details ?? false,
+        columns: heldColumnsFor(category),
+        note: (e) =>
+          `uses ${[...e.consumes].map(([id, n]) => `${formatCount(n * e.crafts)}x ${pricer.name(id)}`).join(', ')}`,
+      });
+    }
+    printMaterialNotes(pricer);
     return;
   }
 
@@ -204,6 +224,31 @@ function percent(ratio: number | undefined): string {
   return ratio >= 10 ? '>999%' : `${Math.round(ratio * 100)}%`;
 }
 
+type HeldColumn = { title: string; width: number; cell: (e: HeldUse) => string };
+
+/** Materials rows: profit is above selling the holdings, so it shows per craft and in total. */
+function heldColumnsFor(category: Category): HeldColumn[] {
+  const cost: HeldColumn = { title: 'cost', width: 10, cell: (e) => formatMoney(e.cost) };
+  const vendor: HeldColumn = {
+    title: 'vendor/u',
+    width: 10,
+    cell: (e) => (e.sale.vendor > 0 ? formatMoney(e.sale.vendor) : '-'),
+  };
+  const gains: HeldColumn[] = [
+    { title: 'gain', width: 10, cell: (e) => formatMoney(e.ifSold) },
+    { title: 'crafts', width: 7, cell: (e) => String(e.crafts) },
+    { title: 'total gain', width: 11, cell: (e) => formatMoney(e.gain) },
+  ];
+  if (category === 'vendor') return [cost, vendor, ...gains];
+  return [
+    cost,
+    { title: 'list at/u', width: 11, cell: (e) => formatMoney(e.sale.auctionGross, true) },
+    vendor,
+    ...gains,
+    { title: 'if unsold', width: 11, cell: (e) => formatMoney(e.ifUnsold) },
+  ];
+}
+
 function columnsFor(pricer: Pricer, category: Category): Column[] {
   const units: Column = {
     title: 'units',
@@ -243,16 +288,21 @@ function columnsFor(pricer: Pricer, category: Category): Column[] {
   ];
 }
 
-function printGroup(
+function printGroup<E extends Evaluation>(
   pricer: Pricer,
   category: Category,
-  list: Evaluation[],
-  limit: number,
-  details: boolean,
+  list: E[],
+  options: {
+    limit: number;
+    details: boolean;
+    columns: { title: string; width: number; cell: (e: E) => string }[];
+    /** A line under each row before the warnings, e.g. what the row uses up. */
+    note?: (e: E) => string;
+  },
 ) {
   if (list.length === 0) return;
+  const { limit, details, columns, note } = options;
   console.log(`== ${CATEGORY_TITLES[category]} (${list.length})`);
-  const columns = columnsFor(pricer, category);
   const header = columns.map((c) => c.title.padStart(c.width)).join('');
   console.log(`${'recipe'.padEnd(32)}${header}  learn`);
   for (const e of list.slice(0, limit)) {
@@ -261,6 +311,7 @@ function printGroup(
     const learn = `${e.recipe.learnSkillExact ? '' : '~'}${e.recipe.learnSkill}${plan}`;
     const cells = columns.map((c) => c.cell(e).padStart(c.width)).join('');
     console.log(`${(e.recipe.name + count).slice(0, 31).padEnd(32)}${cells}  ${learn}`);
+    if (note) console.log(`    ${note(e)}`);
     if (e.warnings.length > 0) console.log(`    ! risk: ${e.warnings.join('; ')}`);
     if (category !== 'steady' && e.reasons.length > 0)
       console.log(`    ! ${e.reasons.slice(0, 2).join('; ')}`);
@@ -295,39 +346,46 @@ function printRecipeNotes(advisor: Advisor, pricer: Pricer): void {
   );
 }
 
-function printMaterial(report: MaterialReport): void {
-  const supply = report.lastSeen
-    ? `at most ${report.marketQuantity} seen on ${report.lastSeen}`
-    : `${report.marketQuantity} listed`;
-  console.log(`\n== ${report.name} x${report.quantity} (market: ${supply})`);
-  const status = report.sale.classification.status;
-  const flag =
-    status === 'stable' ? '' : `  [${status}: ${report.sale.classification.reasons.join('; ')}]`;
-  const { sale } = report;
-  const list =
-    sale.auctionGross === undefined ? '' : `list at ${formatMoney(sale.auctionGross, true)}, `;
-  const vendor = sale.vendor > 0 ? `; vendor pays ${formatMoney(sale.vendor)}` : '';
-  console.log(
-    `  sell as is (${sale.via}): ${list}nets ${formatMoney(sale.unit)} each -> ${formatMoney(report.sellTotal)}${vendor}${flag}`,
-  );
-  if (report.quantity > report.marketQuantity && report.sale.via === 'auction') {
-    console.log(`  ! you hold more than the market shows; selling it all will push the price down`);
-  }
-  if (report.uses.length === 0) {
-    console.log('  no priced recipe in scope uses it');
-    return;
-  }
-  for (const use of report.uses) {
-    const better = report.sale.unit === undefined || use.perUnit > report.sale.unit;
-    console.log(
-      `  ${better ? '+' : ' '} ${formatMoney(use.perUnit).padStart(9)}/unit  ${use.recipe.name} (${use.need} per craft, ${use.crafts} crafts${use.capped ? ', capped at market units' : ''} -> ${formatMoney(use.total)})  [${use.status}]`,
-    );
-    const rest =
-      use.totalWithRest === undefined
+function printHoldings(holdings: HoldingSale[]): void {
+  console.log('== Sell as is');
+  for (const h of holdings) {
+    const { sale } = h;
+    const list =
+      sale.auctionGross === undefined ? '' : `list at ${formatMoney(sale.auctionGross, true)}, `;
+    const vendor =
+      sale.via === 'auction' && sale.vendor > 0 ? `; vendor pays ${formatMoney(sale.vendor)}` : '';
+    const status = sale.classification.status;
+    const flag =
+      sale.via !== 'auction' || status === 'stable'
         ? ''
-        : `; with the rest sold: ${formatMoney(use.totalWithRest)}`;
-    console.log(`      then: ${use.route}${rest}`);
+        : `  [${status}: ${sale.classification.reasons.join('; ')}]`;
+    console.log(
+      `${h.name} x${h.quantity} (${sale.via}): ${list}nets ${formatMoney(sale.unit)} each -> ${formatMoney(h.sellTotal)}${vendor}${flag}`,
+    );
+    if (sale.via === 'auction' && h.quantity > h.marketQuantity) {
+      console.log(
+        `    ! you hold more than the market shows; selling it all will push the price down`,
+      );
+    }
   }
+  const total = holdings.reduce((sum, h) => sum + (h.sellTotal ?? 0), 0);
+  console.log(`all of it: ${formatMoney(total)}\n`);
+}
+
+function formatCount(units: number): string {
+  return Number.isInteger(units) ? String(units) : units.toFixed(1);
+}
+
+function printMaterialNotes(pricer: Pricer): void {
+  const hours = pricer.listingHours;
+  console.log(
+    [
+      'Your materials cost what selling them nets, so gain is what one craft earns above selling what it uses; total gain is over all crafts.',
+      'crafts: whole crafts your materials cover, through intermediates made from them; other reagents are bought. Uses compete for the same materials, so totals do not add up.',
+      'list at: the auction asking price, before the 5% cut. if unsold: one expired listing loses its deposit and the units go to a merchant, against selling your materials.',
+      `deposit: ${Math.round(DEPOSIT_RATES[hours] * 100)}% of the vendor price per unit for a ${hours}h listing (--hours); Classic Era rates, not yet confirmed on Forever.`,
+    ].join('\n'),
+  );
 }
 
 main().catch((error: unknown) => {

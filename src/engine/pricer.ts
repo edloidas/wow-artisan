@@ -17,7 +17,7 @@ export function isListingHours(value: unknown): value is ListingHours {
 }
 const MAX_CRAFT_DEPTH = 3;
 
-export type CostSource = 'auction' | 'vendor' | 'craft' | 'unknown';
+export type CostSource = 'auction' | 'vendor' | 'craft' | 'held' | 'unknown';
 
 export type Part = { itemId: number; count: number; quote: CostQuote };
 
@@ -51,6 +51,11 @@ export type PricerContext = {
   recipes: Recipe[];
   listingHours?: ListingHours;
   names?: Map<number, string>;
+  /**
+   * Items the player holds. They cost what selling them would net: the opportunity cost,
+   * so a craft's profit is what it earns above selling them as they are.
+   */
+  held?: ReadonlySet<number>;
 };
 
 export class Pricer {
@@ -94,6 +99,7 @@ export class Pricer {
 
   /** Cheapest way to get `units` of an item for one craft, per unit. */
   cost(itemId: number, stack: number[] = [], units = 1): CostQuote {
+    if (this.ctx.held?.has(itemId)) return { unit: this.sale(itemId).unit ?? 0, source: 'held' };
     const key = `${itemId}:${units}`;
     const cached = this.costs.get(key);
     if (cached) return cached;

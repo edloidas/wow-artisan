@@ -1,5 +1,5 @@
 import { DEFAULT_THRESHOLDS, type Thresholds } from './engine/classify.ts';
-import { type Holding, MaterialAdvisor, type MaterialReport } from './engine/materials.ts';
+import { type Holding, heldUses, holdingSale, type MaterialsReport } from './engine/materials.ts';
 import {
   DEFAULT_LISTING_HOURS,
   isListingHours,
@@ -95,7 +95,7 @@ export class Advisor {
     return [...own, ...helpers];
   }
 
-  pricer(scope: Scope): Pricer {
+  pricer(scope: Scope, held?: ReadonlySet<number>): Pricer {
     const ctx = {
       game: this.game,
       market: this.market,
@@ -103,6 +103,7 @@ export class Advisor {
       thresholds: this.thresholds,
       recipes: this.craftingRecipes(scope),
       listingHours: scope.listingHours ?? this.listingHours,
+      ...(held ? { held } : {}),
     };
     return new Pricer(this.inventory ? { ...ctx, names: this.inventory.names } : ctx);
   }
@@ -113,10 +114,26 @@ export class Advisor {
     return { pricer, result: recommend(pricer, recipes, minProfit) };
   }
 
-  materials(scope: Scope, holdings: Holding[], limit = 5): MaterialReport[] {
-    const pricer = this.pricer(scope);
-    const advisor = new MaterialAdvisor(pricer, this.craftingRecipes(scope));
-    return holdings.map((holding) => advisor.report(holding, limit));
+  /**
+   * Recipes that use the holdings, evaluated like `recommend` but with the holdings costing
+   * what selling them nets, so profit is what crafting earns above selling them.
+   */
+  materials(
+    scope: Scope,
+    holdings: Holding[],
+    minProfit = 1,
+  ): { pricer: Pricer; report: MaterialsReport } {
+    const pricer = this.pricer(scope, new Set(holdings.map((h) => h.itemId)));
+    const result = recommend(pricer, selectRecipes(this.game.recipes, scope), minProfit);
+    // Held items are priced from a pricer that doesn't treat them as held.
+    const market = this.pricer(scope);
+    return {
+      pricer,
+      report: {
+        holdings: holdings.map((holding) => holdingSale(market, holding)),
+        groups: heldUses(result, holdings),
+      },
+    };
   }
 
   /** Inventory items some in-scope recipe consumes. */

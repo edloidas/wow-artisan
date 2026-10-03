@@ -1,8 +1,9 @@
 import { type Classification, PRESENCE_WINDOW } from './engine/classify.ts';
-import type { MaterialReport } from './engine/materials.ts';
+import type { HeldUse, MaterialsReport } from './engine/materials.ts';
 import {
   type CostQuote,
   DEPOSIT_RATES,
+  type ListingHours,
   type Part,
   type Pricer,
   type SaleQuote,
@@ -108,16 +109,20 @@ export function recommendationsJson(pricer: Pricer, r: Recommendations, limit: n
     unpriced: r.unpriced,
     boundOnPickup: r.bound,
     groups,
-    notes: [
-      'Prices are copper per unit (10000 = 1g); cost, ifSold and ifVendored are per craft.',
-      'listUnit is the auction asking price per unit, before the 5% cut: the number to list at. netUnit is what one unit brings on the sellVia route, after the cut.',
-      'vendorUnit is what a merchant pays per unit (0: no vendor price in the game data). ifVendored is the profit per craft if every unit goes to a merchant. ifUnsold (auction rows) is ifVendored minus one lost deposit: the listing expires once, then the units go to a merchant.',
-      'ifSold assumes every unit sells; no source records sales, so it is not a forecast. Categories describe asking prices and supply; vendor means the product goes to a merchant, with no auction risk.',
-      'breakEven is the lowest auction asking price per unit that covers the cost after the cut.',
-      `depositEstimate is ${Math.round(DEPOSIT_RATES[hours] * 100)}% of the vendor price per unit for a ${hours}h listing (Classic Era rates, not yet confirmed on Forever); refunded on sale, so ifSold excludes it, and lost when the auction expires. warnings name rows where one expired listing costs more than a sale earns, or the auction adds less than a deposit over the vendor price.`,
-      'Auction prices for ahledger markets: data by AHledger (https://ahledger.com).',
-    ],
+    notes: evaluationNotes(hours),
   };
+}
+
+function evaluationNotes(hours: ListingHours): string[] {
+  return [
+    'Prices are copper per unit (10000 = 1g); cost, ifSold and ifVendored are per craft.',
+    'listUnit is the auction asking price per unit, before the 5% cut: the number to list at. netUnit is what one unit brings on the sellVia route, after the cut.',
+    'vendorUnit is what a merchant pays per unit (0: no vendor price in the game data). ifVendored is the profit per craft if every unit goes to a merchant. ifUnsold (auction rows) is ifVendored minus one lost deposit: the listing expires once, then the units go to a merchant.',
+    'ifSold assumes every unit sells; no source records sales, so it is not a forecast. Categories describe asking prices and supply; vendor means the product goes to a merchant, with no auction risk.',
+    'breakEven is the lowest auction asking price per unit that covers the cost after the cut.',
+    `depositEstimate is ${Math.round(DEPOSIT_RATES[hours] * 100)}% of the vendor price per unit for a ${hours}h listing (Classic Era rates, not yet confirmed on Forever); refunded on sale, so ifSold excludes it, and lost when the auction expires. warnings name rows where one expired listing costs more than a sale earns, or the auction adds less than a deposit over the vendor price.`,
+    'Auction prices for ahledger markets: data by AHledger (https://ahledger.com).',
+  ];
 }
 
 /** Units on the market, and for local scans which day that count is from. */
@@ -138,31 +143,45 @@ export function classificationJson(c: Classification) {
   return { status: c.status, reasons: c.reasons };
 }
 
-export function materialReportJson(report: MaterialReport) {
+export function materialsJson(pricer: Pricer, report: MaterialsReport, limit: number) {
+  const groups = Object.fromEntries(
+    (Object.entries(report.groups) as [Category, HeldUse[]][]).map(([category, list]) => [
+      category,
+      {
+        total: list.length,
+        top: list.slice(0, limit).map((use) => ({
+          ...evaluationJson(pricer, use),
+          crafts: use.crafts,
+          gain: Math.round(use.gain),
+          consumes: [...use.consumes].map(([itemId, perCraft]) => ({
+            itemId,
+            name: pricer.name(itemId),
+            perCraft,
+            total: perCraft * use.crafts,
+          })),
+        })),
+      },
+    ]),
+  );
   return {
-    itemId: report.itemId,
-    name: report.name,
-    quantity: report.quantity,
-    marketUnits: report.marketQuantity,
-    marketUnitsAre: report.lastSeen ? 'most seen on lastSeen' : 'listed now',
-    lastSeen: report.lastSeen,
-    sell: {
-      ...saleJson(report.sale),
-      total: copper(report.sellTotal),
-      market: classificationJson(report.sale.classification),
-    },
-    uses: report.uses.map((use) => ({
-      recipe: use.recipe.name,
-      perUnit: Math.round(use.perUnit),
-      need: use.need,
-      crafts: use.crafts,
-      cappedAtMarketUnits: use.capped,
-      total: Math.round(use.total),
-      totalWithRest: use.totalWithRest === undefined ? undefined : Math.round(use.totalWithRest),
-      otherReagentsCost: Math.round(use.otherReagentsCost),
-      route: use.route,
-      productMarket: use.status,
+    market: marketJson(pricer.ctx.market),
+    warnings: marketWarnings(pricer.ctx.market),
+    listingHours: pricer.listingHours,
+    holdings: report.holdings.map((h) => ({
+      itemId: h.itemId,
+      name: h.name,
+      quantity: h.quantity,
+      marketUnits: h.marketQuantity,
+      marketUnitsAre: h.lastSeen ? 'most seen on lastSeen' : 'listed now',
+      lastSeen: h.lastSeen,
+      sell: { ...saleJson(h.sale), total: copper(h.sellTotal) },
     })),
+    groups,
+    notes: [
+      'Each use is a recipe evaluated with the holdings costing what selling them nets, so ifSold is what one craft earns above selling the holdings it uses, and gain is ifSold over all crafts.',
+      'crafts uses only the holdings, through intermediates crafted from them; other reagents are bought. Uses compete for the same holdings, so their gains do not add up.',
+      ...evaluationNotes(pricer.listingHours),
+    ],
   };
 }
 

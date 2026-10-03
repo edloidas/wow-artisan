@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { buyPrice, classify, DEFAULT_THRESHOLDS, referencePrice } from '../src/engine/classify.ts';
-import { MaterialAdvisor } from '../src/engine/materials.ts';
-import { type ListingHours, Pricer } from '../src/engine/pricer.ts';
+import { type Holding, heldUses, holdingSale } from '../src/engine/materials.ts';
+import { auctionParts, type ListingHours, Pricer } from '../src/engine/pricer.ts';
 import { recommend, selectRecipes } from '../src/engine/recommend.ts';
 import { buildGameData } from '../src/gamedata/load.ts';
 import type { GameData, ItemInfo, Recipe } from '../src/gamedata/types.ts';
@@ -242,32 +242,68 @@ describe('recommend', () => {
   });
 });
 
-describe('MaterialAdvisor', () => {
-  test('compares selling with crafting and caps crafts at what the product market lists', () => {
-    const p = pricer(['blacksmithing']);
-    const advisor = new MaterialAdvisor(
-      p,
-      game.recipes.filter((r) => r.profession === 'blacksmithing'),
-    );
-    const report = advisor.report({ itemId: BAR, quantity: 100 });
+describe('materials', () => {
+  function materials(held: Holding[], professions: Recipe['profession'][], marketPrices = prices) {
+    const p = new Pricer({
+      game,
+      market: { ...market, prices: marketPrices },
+      vendorBuy: new Map([[FLUX, 50]]),
+      thresholds: DEFAULT_THRESHOLDS,
+      recipes: game.recipes.filter((r) => professions.includes(r.profession)),
+      held: new Set(held.map((h) => h.itemId)),
+    });
+    const all = selectRecipes(game.recipes, { profession: 'blacksmithing' });
+    return { p, groups: heldUses(recommend(p, all, 1), held) };
+  }
+
+  test('a held reagent costs what selling it nets, and is not bought', () => {
+    const { p } = materials([{ itemId: BAR, quantity: 100 }], ['blacksmithing']);
     // min(95, 100) * 0.95
-    expect(report.sale.unit).toBe(90.25);
-
-    const dagger = report.uses.find((u) => u.recipe.name === 'Dagger');
-    expect(dagger).toMatchObject({ crafts: 2, capped: true });
-    expect(dagger?.totalWithRest).toBe((dagger?.total ?? 0) + 96 * 90.25);
-
-    const sword = report.uses.find((u) => u.recipe.name === 'Sword');
-    expect(sword).toMatchObject({ crafts: 25, capped: false, need: 4 });
-    expect(sword?.perUnit).toBe((1805 - 50) / 4);
+    expect(p.cost(BAR)).toEqual({ unit: 90.25, source: 'held' });
+    const sword = game.recipes.find((r) => r.name === 'Sword');
+    if (!sword) throw new Error('no sword recipe');
+    expect(auctionParts(p.craftCost(sword).parts ?? []).map((part) => part.itemId)).toEqual([]);
   });
 
-  test('follows a chain: ore is worth what the best item made from its bar earns', () => {
-    const p = pricer(['blacksmithing', 'mining']);
-    const advisor = new MaterialAdvisor(p, game.recipes);
-    const [best] = advisor.report({ itemId: ORE, quantity: 10 }).uses;
-    expect(best?.recipe.name).toBe('Smelt Bar');
-    expect(best?.route).toStartWith('Sword');
+  test('a use earns above selling the holdings, over the whole crafts they cover', () => {
+    const { groups } = materials([{ itemId: BAR, quantity: 100 }], ['blacksmithing']);
+    const [sword] = groups.steady;
+    // 1805 - (4 * 90.25 + 50 flux)
+    expect(sword).toMatchObject({ ifSold: 1394, crafts: 25, gain: 1394 * 25 });
+    expect([...(sword?.consumes ?? [])]).toEqual([[BAR, 4]]);
+    // the same deposit and unsold floor as recipes: 100 - 411, then a 60 deposit
+    expect(sword).toMatchObject({ ifVendored: -311, ifUnsold: -371, depositEstimate: 60 });
+    // a thin product is no cap on crafts: 2 dagger on the market, 50 crafts from 100 bars
+    expect(groups.thin.map((u) => [u.recipe.name, u.crafts])).toEqual([['Dagger', 50]]);
+  });
+
+  test('held ore reaches a sword through bars smelted from it', () => {
+    const { groups } = materials([{ itemId: ORE, quantity: 10 }], ['blacksmithing', 'mining']);
+    const [sword] = groups.steady;
+    expect([...(sword?.consumes ?? [])]).toEqual([[ORE, 4]]);
+    expect(sword?.crafts).toBe(2);
+  });
+
+  test('uses that earn less than selling the holdings are dropped', () => {
+    const dear = new Map(prices);
+    dear.set(BAR, { median: 1000, min: 1000, quantity: 300 });
+    const { groups } = materials([{ itemId: BAR, quantity: 100 }], ['blacksmithing'], dear);
+    expect(Object.values(groups).flat()).toEqual([]);
+  });
+
+  test('holdings too few for one craft give no use', () => {
+    const { groups } = materials([{ itemId: BAR, quantity: 3 }], ['blacksmithing']);
+    expect(groups.steady).toEqual([]);
+    expect(groups.thin.map((u) => u.crafts)).toEqual([1]);
+  });
+
+  test('holding sales report what the stack brings as is', () => {
+    const p = pricer(['blacksmithing']);
+    expect(holdingSale(p, { itemId: BAR, quantity: 10 })).toMatchObject({
+      name: 'Bar',
+      sellTotal: 902.5,
+      marketQuantity: 300,
+    });
   });
 });
 
