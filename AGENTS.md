@@ -8,6 +8,7 @@ WoW Forever craft advisor. TypeScript on Bun, no framework. One core in
 ```bash
 bun run cli <command>   # recipes | materials | markets | sync
 bun run mcp             # MCP server on stdio
+bun run mcp --http      # MCP server on http://127.0.0.1:3000/mcp
 bun check:fix           # Typecheck + biome --write
 bun test                # No network, no game install needed
 bun validate            # Full gate: check + test:ci
