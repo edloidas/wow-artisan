@@ -178,7 +178,7 @@ function errorText(result: CallToolResult): string {
 }
 
 describe('tool list', () => {
-  test('all tools are read-only, and the three result tools point at the view', async () => {
+  test('all tools are read-only, and the two result tools point at the view', async () => {
     const { tools } = await (await connect()).listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
       'evaluate_materials',
@@ -196,7 +196,7 @@ describe('tool list', () => {
     expect(views).toEqual({
       recommend_crafts: VIEW_URI,
       evaluate_materials: VIEW_URI,
-      item_price: VIEW_URI,
+      item_price: undefined,
       find_items: undefined,
       list_markets: undefined,
     });
