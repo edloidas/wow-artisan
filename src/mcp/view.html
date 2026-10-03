@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wow-artisan</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: var(--color-background-primary, #ffffff);
+    --bg-2: var(--color-background-secondary, #f6f5f2);
+    --text: var(--color-text-primary, #1f1e1c);
+    --text-2: var(--color-text-secondary, #6b6862);
+    --border: var(--color-border-primary, #e3e0d9);
+    --good: var(--color-text-success, #2f7d32);
+    --bad: var(--color-text-danger, #b3261e);
+    --warn-bg: var(--color-background-warning, #fff4dc);
+    --warn-text: var(--color-text-warning, #7a4b00);
+    --link: var(--color-text-info, #2a5db0);
+    --gold: #b8860b;
+    --silver: #8a8d91;
+    --copper: #b06a3b;
+    --radius: var(--border-radius-md, 8px);
+    --sans: var(--font-sans, system-ui, -apple-system, "Segoe UI", sans-serif);
+    --mono: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: var(--color-background-primary, #1e1d1b);
+      --bg-2: var(--color-background-secondary, #2a2926);
+      --text: var(--color-text-primary, #ecebe8);
+      --text-2: var(--color-text-secondary, #a29f98);
+      --border: var(--color-border-primary, #3b3935);
+      --good: var(--color-text-success, #7cc47f);
+      --bad: var(--color-text-danger, #f2867d);
+      --warn-bg: var(--color-background-warning, #3d3018);
+      --warn-text: var(--color-text-warning, #f3cf85);
+      --link: var(--color-text-info, #8ab4f8);
+      --gold: #e3b341;
+      --silver: #c0c4c8;
+      --copper: #d9925f;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: var(--color-background-primary, #1e1d1b);
+    --bg-2: var(--color-background-secondary, #2a2926);
+    --text: var(--color-text-primary, #ecebe8);
+    --text-2: var(--color-text-secondary, #a29f98);
+    --border: var(--color-border-primary, #3b3935);
+    --good: var(--color-text-success, #7cc47f);
+    --bad: var(--color-text-danger, #f2867d);
+    --warn-bg: var(--color-background-warning, #3d3018);
+    --warn-text: var(--color-text-warning, #f3cf85);
+    --link: var(--color-text-info, #8ab4f8);
+    --gold: #e3b341;
+    --silver: #c0c4c8;
+    --copper: #d9925f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 12px;
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.45 var(--sans);
+  }
+  h2 { font-size: 15px; margin: 0; }
+  h3 { font-size: 13px; margin: 16px 0 6px; display: flex; gap: 8px; align-items: baseline; }
+  a { color: var(--link); text-decoration: none; cursor: pointer; }
+  a:hover { text-decoration: underline; }
+  .muted { color: var(--text-2); }
+  .head { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; margin-bottom: 8px; }
+  .warnings { background: var(--warn-bg); color: var(--warn-text); border-radius: var(--radius); padding: 8px 10px; margin: 8px 0; }
+  .warnings p { margin: 0; }
+  .tag { display: inline-block; border: 1px solid var(--border); border-radius: 999px; padding: 0 7px; font-size: 11px; color: var(--text-2); }
+  .tag.steady { color: var(--good); border-color: currentColor; }
+  .tag.vendor { color: var(--link); border-color: currentColor; }
+  .tag.volatile, .tag.thin { color: var(--warn-text); border-color: currentColor; }
+  .tag.no-market { color: var(--bad); border-color: currentColor; }
+  .scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { padding: 5px 8px; text-align: left; white-space: nowrap; vertical-align: top; }
+  th { font-weight: 600; font-size: 11px; color: var(--text-2); background: var(--bg-2); position: sticky; top: 0; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; width: 88px; }
+  tbody tr { border-top: 1px solid var(--border); }
+  tbody tr.row { cursor: pointer; }
+  tbody tr.row:hover { background: var(--bg-2); }
+  tbody tr.row:focus-visible { outline: 2px solid var(--link); outline-offset: -2px; }
+  tr.detail td { background: var(--bg-2); white-space: normal; padding: 8px 12px 10px; }
+  tr.detail[hidden] { display: none; }
+  .neg { color: var(--bad); }
+  .pos { color: var(--good); }
+  .coin { font-variant-numeric: tabular-nums; }
+  .coin .g { color: var(--gold); }
+  .coin .s { color: var(--silver); }
+  .coin .c { color: var(--copper); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin: 8px 0; }
+  .stat { background: var(--bg-2); border-radius: var(--radius); padding: 8px 10px; }
+  .stat .label { font-size: 11px; color: var(--text-2); }
+  .stat .value { font-size: 15px; font-weight: 600; }
+  ul { margin: 4px 0; padding-left: 18px; }
+  .flag { color: var(--warn-text); }
+  svg.spark { width: 100%; height: 64px; display: block; }
+  svg.spark path { fill: none; stroke: var(--link); stroke-width: 1.5; }
+  svg.spark circle { fill: var(--link); }
+  footer { margin-top: 12px; font-size: 11px; color: var(--text-2); }
+  .empty { padding: 24px 0; text-align: center; color: var(--text-2); }
+</style>
+</head>
+<body>
+<main id="app"><p class="empty">Waiting for the tool result…</p></main>
+<!-- view.js -->
+</body>
+</html>

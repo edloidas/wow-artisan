@@ -41,6 +41,19 @@ export type Scope = RecipeFilter & {
   listingHours?: ListingHours;
 };
 
+/** What an advisor works from once the install has been read. */
+export type AdvisorData = {
+  game: GameData;
+  market: Market;
+  inventory?: Inventory;
+  /** Merchant prices seen in game, on top of the trade-supply ones from game data. */
+  vendorBuy?: Map<number, number>;
+  thresholds?: Partial<Thresholds>;
+  /** Auctionator's listing duration setting; ignored unless Forever offers it. */
+  auctionDuration?: number;
+  installation?: Installation;
+};
+
 export class Advisor {
   private constructor(
     readonly game: GameData,
@@ -67,17 +80,27 @@ export class Advisor {
 
     const spec = options.market ?? process.env.WOW_ARTISAN_MARKET ?? 'auctionator';
     const market = await openMarket(spec, auctionator);
-    const thresholds = { ...DEFAULT_THRESHOLDS, ...options.thresholds };
+    const data: AdvisorData = { game, market };
+    if (inventory) data.inventory = inventory;
+    if (auctionator) {
+      data.vendorBuy = auctionator.vendorBuy;
+      if (auctionator.auctionDuration !== undefined)
+        data.auctionDuration = auctionator.auctionDuration;
+    }
+    if (options.thresholds) data.thresholds = options.thresholds;
+    if (installation) data.installation = installation;
+    return Advisor.fromData(data);
+  }
+
+  static fromData(data: AdvisorData): Advisor {
     return new Advisor(
-      game,
-      market,
-      new Map([...tradeSupplyPrices(game), ...(auctionator?.vendorBuy ?? [])]),
-      inventory,
-      thresholds,
-      installation,
-      isListingHours(auctionator?.auctionDuration)
-        ? auctionator.auctionDuration
-        : DEFAULT_LISTING_HOURS,
+      data.game,
+      data.market,
+      new Map([...tradeSupplyPrices(data.game), ...(data.vendorBuy ?? [])]),
+      data.inventory,
+      { ...DEFAULT_THRESHOLDS, ...data.thresholds },
+      data.installation,
+      isListingHours(data.auctionDuration) ? data.auctionDuration : DEFAULT_LISTING_HOURS,
     );
   }
 

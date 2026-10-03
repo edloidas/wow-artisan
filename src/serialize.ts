@@ -119,6 +119,7 @@ export function recommendationsJson(
   r: Recommendations,
   limit: number,
   lang: Lang = 'en',
+  now = new Date(),
 ) {
   const groups = Object.fromEntries(
     (Object.entries(r.groups) as [Category, Evaluation[]][]).map(([category, list]) => [
@@ -128,8 +129,8 @@ export function recommendationsJson(
   );
   const hours = pricer.listingHours;
   return {
-    market: marketJson(pricer.ctx.market),
-    warnings: marketWarnings(pricer.ctx.market),
+    market: marketJson(pricer.ctx.market, now),
+    warnings: marketWarnings(pricer.ctx.market, now),
     listingHours: hours,
     considered: r.considered,
     unpriced: r.unpriced,
@@ -174,6 +175,7 @@ export function materialsJson(
   report: MaterialsReport,
   limit: number,
   lang: Lang = 'en',
+  now = new Date(),
 ) {
   const groups = Object.fromEntries(
     (Object.entries(report.groups) as [Category, HeldUse[]][]).map(([category, list]) => [
@@ -197,8 +199,8 @@ export function materialsJson(
     ]),
   );
   return {
-    market: marketJson(pricer.ctx.market),
-    warnings: marketWarnings(pricer.ctx.market),
+    market: marketJson(pricer.ctx.market, now),
+    warnings: marketWarnings(pricer.ctx.market, now),
     listingHours: pricer.listingHours,
     holdings: report.holdings.map((h) => ({
       itemId: h.itemId,
