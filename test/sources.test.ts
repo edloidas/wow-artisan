@@ -55,9 +55,11 @@ describe('Auctionator', () => {
     const market = auctionatorMarket(data);
     expect(market.id).toBe('auctionator:TestRealm');
     expect([...market.prices.keys()]).toEqual([2840]);
+    expect(market.latestScan).toBe('2026-09-29');
     expect(market.prices.get(2840)).toEqual({
       min: 136,
       quantity: 6102,
+      lastSeen: '2026-09-29',
       history: [
         { date: '2026-09-27', min: 105, quantity: 3559 },
         { date: '2026-09-29', min: 120, quantity: 6102 },

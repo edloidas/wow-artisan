@@ -58,28 +58,39 @@ Tools: `recommend_crafts`, `evaluate_materials`, `item_price`, `find_items`,
   own scans), the vendor (prices Auctionator cached when you visited one), or
   crafting it yourself from recipes in scope, up to three steps deep.
 - **Sale** is the lower of the cheapest listing and the usual price, minus the 5%
-  auction cut and an estimated deposit; a vendor price is the floor. Products
-  that bind on pickup never count as auction sales.
-- **Categories:**
-  - *Reliable*: the product market is deep and steady.
-  - *Risky*: the product's price jumps around. The cheapest listing is far from
-    the usual price, the price swung over the period, or the 7-day median
-    drifts from the 30-day one.
-  - *Thin*: few units of the product, or of a bought reagent, are listed.
+  auction cut; a vendor price is the floor. Products that bind on pickup never
+  count as auction sales.
+- **If sold** is the margin per craft if every unit sells at that price. Nothing
+  records sales, so it is a condition, not a forecast. **Break-even** is the
+  lowest asking price per unit that covers the cost after the cut.
+- **Deposits** are not subtracted. The estimate (15% of the vendor price per unit
+  for 24h) is printed beside the table until a real invoice confirms the rule.
+- **Categories** describe the markets a recipe depends on, not whether it sells:
+  - *Steady*: enough units, and the product's asking price holds.
+  - *Volatile*: the product's price jumps around. The cheapest listing is far
+    below the usual price, the price swung over the period, or the 7-day median
+    drifts from the 30-day one. A cheapest listing above the usual price is not
+    a risk: the sale price already takes the lower of the two.
+  - *Thin*: few units of the product or of a bought reagent, or the item was
+    missing from your latest scan, so its figures are old.
   - *No market*: nothing is listed and no vendor buys it; only the cost is shown.
 
   Reagent price history does not matter: you buy at today's price. Only whether
-  enough is listed does. Thresholds are flags: `--thin`, `--spread`, `--swing`,
-  `--trend`.
+  enough is on the market does. Thresholds are flags: `--thin`, `--spread`,
+  `--swing`, `--trend`.
+- **Units** on your own scans are the most units Auctionator saw on the last day
+  it scanned the item, not what is listed now; the output says which day.
 - **Materials**: compares selling with each recipe that uses the material,
-  following chains such as ore → bar → item. Crafts are capped at what the
-  product's market lists, and the rest is valued as sold.
+  following chains such as ore → bar → item. Crafts are capped at the product's
+  market units, a rough bound, and the rest is valued as sold.
 
 ## Caveats
 
 - Learn skill marked `~` is estimated. Only plans carry the skill a recipe needs;
   for trainer recipes it is the yellow threshold minus 20, the most common gap.
-- The deposit is estimated as 15% of the vendor price; Forever's rule is unverified.
+- The deposit estimate is unverified for Forever.
+- Margins assume your listings don't move the price. A batch that is a large share
+  of the units on the market will sell lower.
 - Auctionator keys its database by realm only. With characters of both factions
   on one gameplay style, their scans mix in one market.
 - Auctionator records only the cheapest price per scan and the most units seen

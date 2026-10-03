@@ -6,7 +6,7 @@ export type PriceStats = {
   min?: number;
   /** Median across all listed units in the latest scan; AHledger only. */
   median?: number;
-  /** Units listed in the latest scan. */
+  /** Units listed now (AHledger), or the most seen on `lastSeen` (Auctionator). */
   quantity: number;
   median7d?: number;
   median30d?: number;
@@ -14,6 +14,11 @@ export type PriceStats = {
   high30d?: number;
   /** Per-day minimum from local scans; Auctionator only. */
   history?: DailyPrice[];
+  /**
+   * Day of the last scan that saw the item; Auctionator only. On those scans
+   * `quantity` is the most units seen that day, not what is listed now.
+   */
+  lastSeen?: string;
 };
 
 export type MarketSource = 'auctionator' | 'ahledger';
@@ -23,5 +28,7 @@ export type Market = {
   label: string;
   source: MarketSource;
   observedAt?: string;
+  /** Day of the newest local scan; an item last seen before it was missing from that scan. */
+  latestScan?: string;
   prices: Map<number, PriceStats>;
 };

@@ -74,7 +74,7 @@ server.registerTool(
   {
     title: 'Recommend profitable crafts',
     description:
-      'Recipes worth crafting from bought or crafted materials and selling, grouped as reliable, risky (prices jump), thin (few listed) and no-market. Copper amounts: 10000 = 1g.',
+      'Recipes with a positive margin from bought or crafted materials, grouped by the health of their markets: steady (enough units, stable asking prices), volatile, thin (few units or missing from the latest scan) and no-market. ifSold assumes every unit sells; nothing records sales, so it is not a forecast. Copper amounts: 10000 = 1g.',
     inputSchema: {
       profession,
       maxSkill,

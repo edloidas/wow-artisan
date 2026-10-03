@@ -35,8 +35,9 @@ export type MaterialReport = {
   sale: SaleQuote;
   /** Copper for selling the whole stack at today's price. */
   sellTotal?: number;
-  /** Units the market lists right now; selling far more will move the price. */
+  /** Units on the market (most seen on `lastSeen` for local scans); selling far more moves the price. */
   marketQuantity: number;
+  lastSeen?: string;
   uses: Use[];
 };
 
@@ -77,6 +78,7 @@ export class MaterialAdvisor {
       marketQuantity: stats?.quantity ?? 0,
       uses,
     };
+    if (stats?.lastSeen) report.lastSeen = stats.lastSeen;
     if (sale.unit !== undefined) {
       const unit = sale.unit;
       report.sellTotal = unit * quantity;

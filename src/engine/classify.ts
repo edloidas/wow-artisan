@@ -51,9 +51,31 @@ export function sellPrice(stats: PriceStats | undefined): number | undefined {
   return candidates.length > 0 ? Math.min(...candidates) : undefined;
 }
 
+/**
+ * Why the market can't be counted on to hold enough units, or undefined when it can.
+ * Local scans keep only the most units seen per day, and an item missing from the newest
+ * scan keeps its old figures, so a stale item says nothing about what is listed now.
+ */
+export function availabilityProblem(
+  stats: PriceStats,
+  thresholds: Thresholds,
+  latestScan?: string,
+): string | undefined {
+  if (stats.lastSeen && latestScan && stats.lastSeen < latestScan) {
+    return `missing from the latest scan (last seen ${stats.lastSeen})`;
+  }
+  if (stats.quantity < thresholds.thinQuantity) {
+    return stats.lastSeen
+      ? `at most ${stats.quantity} seen on ${stats.lastSeen}`
+      : `only ${stats.quantity} listed`;
+  }
+  return undefined;
+}
+
 export function classify(
   stats: PriceStats | undefined,
   thresholds: Thresholds = DEFAULT_THRESHOLDS,
+  latestScan?: string,
 ): Classification {
   if (!stats || stats.quantity <= 0 || (stats.min === undefined && stats.median === undefined)) {
     return { status: 'none', reasons: ['nothing listed'] };
@@ -61,13 +83,14 @@ export function classify(
   const reasons: string[] = [];
   let status: ItemStatus = 'stable';
 
+  // Only a cheap outlier is a risk: a seller undercuts it. A cheapest listing above the
+  // usual price changes nothing, because the sale price already takes the lower of the two.
   const reference = referencePrice(stats);
   if (reference && stats.min !== undefined) {
     const gap = (reference - stats.min) / reference;
-    if (Math.abs(gap) > thresholds.maxSpread) {
+    if (gap > thresholds.maxSpread) {
       status = 'volatile';
-      const direction = gap > 0 ? 'under' : 'over';
-      reasons.push(`cheapest is ${Math.round(Math.abs(gap) * 100)}% ${direction} the usual price`);
+      reasons.push(`cheapest is ${Math.round(gap * 100)}% under the usual price`);
     }
   }
 
@@ -86,9 +109,10 @@ export function classify(
     }
   }
 
-  if (stats.quantity < thresholds.thinQuantity) {
+  const problem = availabilityProblem(stats, thresholds, latestScan);
+  if (problem) {
     status = 'thin';
-    reasons.push(`only ${stats.quantity} listed`);
+    reasons.push(problem);
   }
   return { status, reasons };
 }

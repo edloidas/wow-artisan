@@ -54,9 +54,11 @@ export function evaluationJson(pricer: Pricer, e: Evaluation) {
     cost: Math.round(e.cost),
     sellUnit: e.sale.unit === undefined ? undefined : Math.round(e.sale.unit),
     sellVia: e.sale.via,
-    profit: e.profit === undefined ? undefined : Math.round(e.profit),
-    margin: e.margin === undefined ? undefined : Math.round(e.margin * 100) / 100,
-    listed: pricer.ctx.market.prices.get(e.recipe.output.itemId)?.quantity ?? 0,
+    ifSold: e.ifSold === undefined ? undefined : Math.round(e.ifSold),
+    marginRatio: e.marginRatio === undefined ? undefined : Math.round(e.marginRatio * 100) / 100,
+    breakEven: Math.ceil(e.breakEven),
+    depositEstimate: Math.round(e.depositEstimate),
+    productMarket: supplyJson(pricer, e.recipe.output.itemId),
     reasons: e.reasons,
     materials: partsJson(pricer, e.parts),
   };
@@ -76,9 +78,23 @@ export function recommendationsJson(pricer: Pricer, r: Recommendations, limit: n
     boundOnPickup: r.bound,
     groups,
     notes: [
-      'Prices are copper per unit (10000 = 1g). Profit is per craft after the 5% auction cut and an estimated deposit.',
+      'Prices are copper per unit (10000 = 1g).',
+      'ifSold is copper per craft if every unit sells at sellUnit, after the 5% auction cut. No source records sales, so it is not a forecast; categories describe asking prices and supply only.',
+      'Deposits are not included; depositEstimate is 15% of the vendor price per unit for 24h and is unverified.',
+      'breakEven is the lowest asking price per unit that covers the cost after the cut.',
       'Auction prices for ahledger markets: data by AHledger (https://ahledger.com).',
     ],
+  };
+}
+
+/** Units on the market, and for local scans which day that count is from. */
+export function supplyJson(pricer: Pricer, itemId: number) {
+  const stats = pricer.ctx.market.prices.get(itemId);
+  return {
+    units: stats?.quantity ?? 0,
+    unitsAre: stats?.lastSeen ? 'most seen on lastSeen' : 'listed now',
+    lastSeen: stats?.lastSeen,
+    observedDays: stats?.history?.length,
   };
 }
 
@@ -91,7 +107,9 @@ export function materialReportJson(report: MaterialReport) {
     itemId: report.itemId,
     name: report.name,
     quantity: report.quantity,
-    marketQuantity: report.marketQuantity,
+    marketUnits: report.marketQuantity,
+    marketUnitsAre: report.lastSeen ? 'most seen on lastSeen' : 'listed now',
+    lastSeen: report.lastSeen,
     sell: {
       unit: report.sale.unit === undefined ? undefined : Math.round(report.sale.unit),
       via: report.sale.via,
@@ -103,7 +121,7 @@ export function materialReportJson(report: MaterialReport) {
       perUnit: Math.round(use.perUnit),
       need: use.need,
       crafts: use.crafts,
-      cappedByMarket: use.capped,
+      cappedAtMarketUnits: use.capped,
       total: Math.round(use.total),
       totalWithRest: use.totalWithRest === undefined ? undefined : Math.round(use.totalWithRest),
       otherReagentsCost: Math.round(use.otherReagentsCost),

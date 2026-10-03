@@ -3,7 +3,10 @@ import type { Market } from '../prices/types.ts';
 import { buyPrice, type Classification, classify, sellPrice, type Thresholds } from './classify.ts';
 
 export const AUCTION_CUT = 0.05;
-/** 24h deposit as a share of vendor sell price; an estimate, not verified for Forever. */
+/**
+ * 24h deposit as a share of vendor sell price; an estimate, not verified for Forever.
+ * Reported next to a sale, never subtracted from it, until an invoice confirms the rule.
+ */
 export const DEPOSIT_SHARE = 0.15;
 const MAX_CRAFT_DEPTH = 3;
 
@@ -65,7 +68,15 @@ export class Pricer {
   }
 
   classification(itemId: number): Classification {
-    return classify(this.ctx.market.prices.get(itemId), this.ctx.thresholds);
+    return classify(
+      this.ctx.market.prices.get(itemId),
+      this.ctx.thresholds,
+      this.ctx.market.latestScan,
+    );
+  }
+
+  depositEstimate(itemId: number): number {
+    return this.vendorSell(itemId) * DEPOSIT_SHARE;
   }
 
   cost(itemId: number, stack: number[] = []): CostQuote {
@@ -83,7 +94,7 @@ export class Pricer {
       options.push({
         unit: auction,
         source: 'auction',
-        classification: classify(stats, this.ctx.thresholds),
+        classification: this.classification(itemId),
       });
     }
 
@@ -116,12 +127,11 @@ export class Pricer {
 
   sale(itemId: number): SaleQuote {
     const stats = this.ctx.market.prices.get(itemId);
-    const classification = classify(stats, this.ctx.thresholds);
+    const classification = this.classification(itemId);
     const vendor = this.vendorSell(itemId);
     const tradeable = !this.ctx.game.items[itemId]?.boundOnPickup;
     const gross = classification.status === 'none' || !tradeable ? undefined : sellPrice(stats);
-    const auctionNet =
-      gross === undefined ? undefined : gross * (1 - AUCTION_CUT) - vendor * DEPOSIT_SHARE;
+    const auctionNet = gross === undefined ? undefined : gross * (1 - AUCTION_CUT);
     if (auctionNet !== undefined && auctionNet >= vendor) {
       return { unit: auctionNet, via: 'auction', auctionNet, vendor, classification };
     }

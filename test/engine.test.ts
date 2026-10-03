@@ -100,6 +100,22 @@ describe('classify', () => {
     ).toEqual(['7-day median +50% vs 30-day']);
   });
 
+  test('only a cheapest listing below the usual price is volatile', () => {
+    expect(classify({ min: 1500, median7d: 1000, quantity: 50 }).status).toBe('stable');
+  });
+
+  test('local counts are reported as most seen, and an item missing from the latest scan is thin', () => {
+    const seen = { min: 100, quantity: 2, lastSeen: '2026-09-29' };
+    expect(classify(seen, DEFAULT_THRESHOLDS, '2026-09-29').reasons).toEqual([
+      'at most 2 seen on 2026-09-29',
+    ]);
+    const stale = { min: 100, quantity: 50, lastSeen: '2026-09-27' };
+    expect(classify(stale, DEFAULT_THRESHOLDS, '2026-09-29')).toEqual({
+      status: 'thin',
+      reasons: ['missing from the latest scan (last seen 2026-09-27)'],
+    });
+  });
+
   test('nothing listed has no market', () => {
     expect(classify(undefined).status).toBe('none');
     expect(classify({ min: 5, quantity: 0 }).status).toBe('none');
@@ -125,8 +141,8 @@ describe('Pricer', () => {
   });
 
   test('sells at the lower of the cheapest listing and the usual price, after cut and deposit', () => {
-    // min(1900, 1950) * 0.95 - 100 vendor * 0.15
-    expect(pricer(['blacksmithing']).sale(SWORD)).toMatchObject({ unit: 1790, via: 'auction' });
+    // min(1900, 1950) * 0.95; the deposit is reported separately, not subtracted
+    expect(pricer(['blacksmithing']).sale(SWORD)).toMatchObject({ unit: 1805, via: 'auction' });
   });
 });
 
@@ -137,8 +153,41 @@ describe('recommend', () => {
     const result = recommend(p, inRange, 0);
     expect(result.considered).toBe(2);
     expect(result.bound).toBe(1);
-    expect(result.groups.reliable.map((e) => [e.recipe.name, e.profit])).toEqual([
-      ['Sword', 1790 - (4 * 20 + 50)],
+    expect(result.groups.steady.map((e) => [e.recipe.name, e.ifSold])).toEqual([
+      ['Sword', 1805 - (4 * 20 + 50)],
+    ]);
+  });
+
+  test('reports the break-even asking price and the deposit estimate without subtracting it', () => {
+    const p = pricer(['blacksmithing', 'mining']);
+    const [sword] = recommend(
+      p,
+      selectRecipes(game.recipes, { profession: 'blacksmithing', maxSkill: 100 }),
+      0,
+    ).groups.steady;
+    expect(sword?.breakEven).toBe(130 / 0.95);
+    // 15% of the 100c vendor price
+    expect(sword?.depositEstimate).toBe(15);
+  });
+
+  test('a reagent missing from the latest local scan makes the recipe thin', () => {
+    const staleBar = new Map(prices);
+    staleBar.set(BAR, { min: 95, quantity: 300, lastSeen: '2026-09-27' });
+    staleBar.set(SWORD, { min: 1900, quantity: 50, lastSeen: '2026-09-29' });
+    const p = new Pricer({
+      game,
+      market: { ...market, source: 'auctionator', latestScan: '2026-09-29', prices: staleBar },
+      vendorBuy: new Map([[FLUX, 50]]),
+      thresholds: DEFAULT_THRESHOLDS,
+      recipes: game.recipes.filter((r) => r.profession === 'blacksmithing'),
+    });
+    const result = recommend(
+      p,
+      selectRecipes(game.recipes, { profession: 'blacksmithing', maxSkill: 100 }),
+      0,
+    );
+    expect(result.groups.thin.map((e) => [e.recipe.name, e.reasons])).toEqual([
+      ['Sword', ['Bar: missing from the latest scan (last seen 2026-09-27)']],
     ]);
   });
 
@@ -151,7 +200,7 @@ describe('recommend', () => {
   test('the minimum profit filter drops weak recipes', () => {
     const all = selectRecipes(game.recipes, { profession: 'blacksmithing' });
     const result = recommend(pricer(['blacksmithing']), all, 2_000);
-    expect(result.groups.reliable).toEqual([]);
+    expect(result.groups.steady).toEqual([]);
     expect(result.groups.thin).toEqual([]);
   });
 });
@@ -164,16 +213,16 @@ describe('MaterialAdvisor', () => {
       game.recipes.filter((r) => r.profession === 'blacksmithing'),
     );
     const report = advisor.report({ itemId: BAR, quantity: 100 });
-    // min(95, 100) * 0.95 - 10 * 0.15
-    expect(report.sale.unit).toBe(88.75);
+    // min(95, 100) * 0.95
+    expect(report.sale.unit).toBe(90.25);
 
     const dagger = report.uses.find((u) => u.recipe.name === 'Dagger');
     expect(dagger).toMatchObject({ crafts: 2, capped: true });
-    expect(dagger?.totalWithRest).toBe((dagger?.total ?? 0) + 96 * 88.75);
+    expect(dagger?.totalWithRest).toBe((dagger?.total ?? 0) + 96 * 90.25);
 
     const sword = report.uses.find((u) => u.recipe.name === 'Sword');
     expect(sword).toMatchObject({ crafts: 25, capped: false, need: 4 });
-    expect(sword?.perUnit).toBe((1790 - 50) / 4);
+    expect(sword?.perUnit).toBe((1805 - 50) / 4);
   });
 
   test('follows a chain: ore is worth what the best item made from its bar earns', () => {

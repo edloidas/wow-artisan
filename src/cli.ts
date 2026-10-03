@@ -3,7 +3,7 @@ import { parseArgs } from 'node:util';
 import { Advisor, isProfession, type Scope } from './advisor.ts';
 import type { Thresholds } from './engine/classify.ts';
 import type { Holding, MaterialReport } from './engine/materials.ts';
-import type { Pricer } from './engine/pricer.ts';
+import { DEPOSIT_SHARE, type Pricer } from './engine/pricer.ts';
 import type { Category, Evaluation } from './engine/recommend.ts';
 import { loadGameData } from './gamedata/load.ts';
 import type { Profession } from './gamedata/types.ts';
@@ -41,9 +41,9 @@ Options:
 `;
 
 const CATEGORY_TITLES: Record<Category, string> = {
-  reliable: 'Reliable',
-  risky: 'Risky: prices jump around',
-  thin: 'Thin: very few listed',
+  steady: 'Steady: enough units, stable asking prices',
+  volatile: 'Volatile: asking prices jump around',
+  thin: 'Thin: few units, or missing from the latest scan',
   'no-market': 'No market: nothing listed, no vendor floor (cost only)',
 };
 
@@ -119,6 +119,7 @@ async function main(): Promise<void> {
     for (const [category, list] of Object.entries(result.groups) as [Category, Evaluation[]][]) {
       printGroup(pricer, category, list, limit, values.details ?? false);
     }
+    printRecipeNotes(advisor);
     return;
   }
 
@@ -179,22 +180,22 @@ function printGroup(
 ) {
   if (list.length === 0) return;
   console.log(`== ${CATEGORY_TITLES[category]} (${list.length})`);
-  const showProfit = category !== 'no-market';
-  const moneyHeader = showProfit ? `${'sells'.padStart(10)}${'profit'.padStart(10)}  via    ` : '';
+  const showSale = category !== 'no-market';
+  const saleHeader = showSale ? `${'sell at'.padStart(10)}${'if sold'.padStart(10)}  via    ` : '';
   console.log(
-    `${'recipe'.padEnd(34)}${'cost'.padStart(10)}${moneyHeader}${'listed'.padStart(7)}  learn`,
+    `${'recipe'.padEnd(34)}${'cost'.padStart(10)}${'break-even'.padStart(11)}${saleHeader}${'units'.padStart(6)}  learn`,
   );
   for (const e of list.slice(0, limit)) {
-    const listed = pricer.ctx.market.prices.get(e.recipe.output.itemId)?.quantity ?? 0;
+    const units = pricer.ctx.market.prices.get(e.recipe.output.itemId)?.quantity ?? 0;
     const count = e.recipe.output.count > 1 ? ` x${e.recipe.output.count}` : '';
     const learn = `${e.recipe.learnSkillExact ? '' : '~'}${e.recipe.learnSkill}`;
-    const money = showProfit
-      ? `${formatMoney(e.sale.unit).padStart(10)}${formatMoney(e.profit).padStart(10)}  ${e.sale.via.padEnd(7)}`
+    const sale = showSale
+      ? `${formatMoney(e.sale.unit).padStart(10)}${formatMoney(e.ifSold).padStart(10)}  ${e.sale.via.padEnd(7)}`
       : '';
     console.log(
-      `${(e.recipe.name + count).slice(0, 33).padEnd(34)}${formatMoney(e.cost).padStart(10)}${money}${String(listed).padStart(7)}  ${learn}`,
+      `${(e.recipe.name + count).slice(0, 33).padEnd(34)}${formatMoney(e.cost).padStart(10)}${formatMoney(e.breakEven).padStart(11)}${sale}${String(units).padStart(6)}  ${learn}`,
     );
-    if (category !== 'reliable' && e.reasons.length > 0)
+    if (category !== 'steady' && e.reasons.length > 0)
       console.log(`    ! ${e.reasons.slice(0, 2).join('; ')}`);
     if (details) {
       const mats = e.parts.map((p) => {
@@ -208,8 +209,26 @@ function printGroup(
   console.log('');
 }
 
+function printRecipeNotes(advisor: Advisor): void {
+  const units =
+    advisor.market.source === 'auctionator'
+      ? `units: the most seen on the last day the item was scanned (latest scan ${advisor.market.latestScan ?? 'unknown'}).`
+      : 'units: listed now.';
+  console.log(
+    [
+      'if sold: per craft, if every unit sells at "sell at" after the 5% cut. Nothing records sales, so this is not a forecast.',
+      'break-even: the lowest asking price per unit that covers the cost after the cut.',
+      `${units}`,
+      `Deposits are not included: estimated at ${Math.round(DEPOSIT_SHARE * 100)}% of the vendor price per unit for 24h, unverified.`,
+    ].join('\n'),
+  );
+}
+
 function printMaterial(report: MaterialReport): void {
-  console.log(`\n== ${report.name} x${report.quantity} (market lists ${report.marketQuantity})`);
+  const supply = report.lastSeen
+    ? `at most ${report.marketQuantity} seen on ${report.lastSeen}`
+    : `${report.marketQuantity} listed`;
+  console.log(`\n== ${report.name} x${report.quantity} (market: ${supply})`);
   const status = report.sale.classification.status;
   const flag =
     status === 'stable' ? '' : `  [${status}: ${report.sale.classification.reasons.join('; ')}]`;
@@ -217,7 +236,7 @@ function printMaterial(report: MaterialReport): void {
     `  sell as is: ${formatMoney(report.sale.unit)} each -> ${formatMoney(report.sellTotal)} (${report.sale.via})${flag}`,
   );
   if (report.quantity > report.marketQuantity && report.sale.via === 'auction') {
-    console.log(`  ! you hold more than the market lists; selling it all will push the price down`);
+    console.log(`  ! you hold more than the market shows; selling it all will push the price down`);
   }
   if (report.uses.length === 0) {
     console.log('  no priced recipe in scope uses it');
@@ -226,7 +245,7 @@ function printMaterial(report: MaterialReport): void {
   for (const use of report.uses) {
     const better = report.sale.unit === undefined || use.perUnit > report.sale.unit;
     console.log(
-      `  ${better ? '+' : ' '} ${formatMoney(use.perUnit).padStart(9)}/unit  ${use.recipe.name} (${use.need} per craft, ${use.crafts} crafts${use.capped ? ', capped by market' : ''} -> ${formatMoney(use.total)})  [${use.status}]`,
+      `  ${better ? '+' : ' '} ${formatMoney(use.perUnit).padStart(9)}/unit  ${use.recipe.name} (${use.need} per craft, ${use.crafts} crafts${use.capped ? ', capped at market units' : ''} -> ${formatMoney(use.total)})  [${use.status}]`,
     );
     const rest =
       use.totalWithRest === undefined

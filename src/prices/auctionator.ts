@@ -51,13 +51,20 @@ export function auctionatorMarket(data: AuctionatorData, realm?: string): Market
     const known = entries.map(([key]) => key).join(', ') || 'none';
     throw new Error(`Auctionator has no realm '${realm ?? ''}' (known: ${known})`);
   }
-  return {
+  const market: Market = {
     id: `auctionator:${chosen[0]}`,
     label: `${chosen[0]} (your Auctionator scans)`,
     source: 'auctionator',
     observedAt: data.modifiedAt,
     prices: chosen[1],
   };
+  const days = [...chosen[1].values()]
+    .map((s) => s.lastSeen ?? '')
+    .filter(Boolean)
+    .sort();
+  const latestScan = days.at(-1);
+  if (latestScan) market.latestScan = latestScan;
+  return market;
 }
 
 function decodePriceDatabase(db: LuaValue | undefined): Map<string, Map<number, PriceStats>> {
@@ -101,7 +108,9 @@ function toStats(entry: RawEntry): PriceStats {
     if (quantity !== undefined) daily.quantity = quantity;
     return daily;
   });
-  const stats: PriceStats = { quantity: history.at(-1)?.quantity ?? 0, history };
+  const last = history.at(-1);
+  const stats: PriceStats = { quantity: last?.quantity ?? 0, history };
+  if (last) stats.lastSeen = last.date;
   if (entry.m !== undefined) stats.min = entry.m;
   return stats;
 }

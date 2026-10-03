@@ -1,8 +1,12 @@
 import type { Profession, Recipe } from '../gamedata/types.ts';
-import { type ItemStatus, worstStatus } from './classify.ts';
-import { auctionParts, type Part, type Pricer, type SaleQuote } from './pricer.ts';
+import { availabilityProblem, type ItemStatus, worstStatus } from './classify.ts';
+import { AUCTION_CUT, auctionParts, type Part, type Pricer, type SaleQuote } from './pricer.ts';
 
-export type Category = 'reliable' | 'risky' | 'thin' | 'no-market';
+/**
+ * Health of the markets a recipe depends on. None of these says the product sells:
+ * no source records sales, so "steady" means steady asking prices and enough units.
+ */
+export type Category = 'steady' | 'volatile' | 'thin' | 'no-market';
 
 export type RecipeFilter = {
   profession: Profession;
@@ -18,9 +22,17 @@ export type Evaluation = {
   cost: number;
   parts: Part[];
   sale: SaleQuote;
-  /** Copper per craft; undefined when the product has no market and no vendor floor. */
-  profit?: number;
-  margin?: number;
+  /**
+   * Copper per craft if every unit sells at the quoted price; undefined when the product
+   * has no market and no vendor floor. Deposits are not included.
+   */
+  ifSold?: number;
+  /** `ifSold` as a share of cost. */
+  marginRatio?: number;
+  /** Lowest asking price per unit that covers the cost after the auction cut. */
+  breakEven: number;
+  /** Deposit per unit for a 24h listing, estimated from the vendor price; unverified. */
+  depositEstimate: number;
   category: Category;
   reasons: string[];
 };
@@ -54,34 +66,34 @@ export function evaluateRecipe(pricer: Pricer, recipe: Recipe): Evaluation | und
   const materialStatuses: ItemStatus[] = [];
   const reasons: string[] = [];
   for (const part of auctionParts(parts)) {
-    const listed = pricer.ctx.market.prices.get(part.itemId)?.quantity ?? 0;
-    if (listed < pricer.ctx.thresholds.thinQuantity) {
+    const stats = pricer.ctx.market.prices.get(part.itemId);
+    const problem = stats
+      ? availabilityProblem(stats, pricer.ctx.thresholds, pricer.ctx.market.latestScan)
+      : 'nothing listed';
+    if (problem) {
       materialStatuses.push('thin');
-      reasons.push(`${pricer.name(part.itemId)}: only ${listed} listed`);
+      reasons.push(`${pricer.name(part.itemId)}: ${problem}`);
     }
   }
 
-  if (sale.unit === undefined) {
-    return {
-      recipe,
-      cost,
-      parts,
-      sale,
-      category: 'no-market',
-      reasons: ['product: nothing listed, no vendor price'],
-    };
-  }
-  const profit = sale.unit * recipe.output.count - cost;
-  const evaluation: Evaluation = {
+  const base = {
     recipe,
     cost,
     parts,
     sale,
-    profit,
-    category: 'reliable',
-    reasons,
+    breakEven: cost / recipe.output.count / (1 - AUCTION_CUT),
+    depositEstimate: pricer.depositEstimate(recipe.output.itemId),
   };
-  if (cost > 0) evaluation.margin = profit / cost;
+  if (sale.unit === undefined) {
+    return {
+      ...base,
+      category: 'no-market',
+      reasons: ['product: nothing listed, no vendor price'],
+    };
+  }
+  const ifSold = sale.unit * recipe.output.count - cost;
+  const evaluation: Evaluation = { ...base, ifSold, category: 'steady', reasons };
+  if (cost > 0) evaluation.marginRatio = ifSold / cost;
 
   // A vendor sale has no market risk, so only the product's own auction market counts.
   const productStatuses: ItemStatus[] = sale.via === 'auction' ? [sale.classification.status] : [];
@@ -96,16 +108,16 @@ export function evaluateRecipe(pricer: Pricer, recipe: Recipe): Evaluation | und
 }
 
 function categoryOf(status: ItemStatus): Category {
-  if (status === 'stable') return 'reliable';
-  if (status === 'volatile') return 'risky';
+  if (status === 'stable') return 'steady';
+  if (status === 'volatile') return 'volatile';
   // A reagent with nothing listed can't be part of an evaluation, so this is thin stock.
   return 'thin';
 }
 
 export function recommend(pricer: Pricer, recipes: Recipe[], minProfit: number): Recommendations {
   const groups: Record<Category, Evaluation[]> = {
-    reliable: [],
-    risky: [],
+    steady: [],
+    volatile: [],
     thin: [],
     'no-market': [],
   };
@@ -122,12 +134,12 @@ export function recommend(pricer: Pricer, recipes: Recipe[], minProfit: number):
       bound++;
     } else if (evaluation.category === 'no-market') {
       groups['no-market'].push(evaluation);
-    } else if ((evaluation.profit ?? -Infinity) >= minProfit) {
+    } else if ((evaluation.ifSold ?? -Infinity) >= minProfit) {
       groups[evaluation.category].push(evaluation);
     }
   }
   for (const list of Object.values(groups)) {
-    list.sort((a, b) => (b.profit ?? -b.cost) - (a.profit ?? -a.cost));
+    list.sort((a, b) => (b.ifSold ?? -b.cost) - (a.ifSold ?? -a.cost));
   }
   groups['no-market'].sort((a, b) => a.cost - b.cost);
   return { groups, unpriced, bound, considered: recipes.length };
