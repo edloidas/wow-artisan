@@ -53,12 +53,36 @@ items and recipes and a `localName` beside `name` for a non-English language.
 
 ### MCP server
 
+Claude Code:
+
 ```bash
 claude mcp add wow-artisan -- bun /path/to/wow-artisan/src/mcp.ts
 ```
 
+Claude Desktop, in `claude_desktop_config.json` (Settings → Developer → Edit
+Config). Desktop starts the server without your shell's `PATH`, so give the full
+path to `bun` (`which bun`):
+
+```json
+{
+  "mcpServers": {
+    "wow-artisan": {
+      "command": "/Users/you/.bun/bin/bun",
+      "args": ["/path/to/wow-artisan/src/mcp.ts"],
+      "env": { "WOW_ARTISAN_LANG": "en" }
+    }
+  }
+}
+```
+
 Tools: `recommend_crafts`, `evaluate_materials`, `item_price`, `find_items`,
-`list_markets`. All are read-only.
+`list_markets`. All are read-only. Each returns its JSON both as
+`structuredContent` and as text. In hosts that support MCP Apps, such as Claude
+Desktop, `recommend_crafts`, `evaluate_materials` and `item_price` also render a
+view: tables by category with prices in gold, silver and copper, and rows that
+expand to show materials and risks. The item view adds a price history chart and
+Wowhead links. Other hosts show the JSON, and so does a Desktop build that does not
+render the view; the answer is the same either way.
 
 ## How it decides
 
