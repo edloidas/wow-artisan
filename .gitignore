@@ -1,0 +1,14 @@
+# Local tooling
+.claude/plans/
+.claude/settings.local.json
+.mcp.json
+.tmp/
+
+# Dependencies
+node_modules/
+
+# Test coverage
+coverage/
+
+# macOS
+.DS_Store

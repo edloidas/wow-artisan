@@ -1,0 +1,49 @@
+{
+  "name": "wow-artisan",
+  "private": true,
+  "version": "0.1.0",
+  "description": "World of Warcraft Forever craft advisor",
+  "keywords": ["wow", "world-of-warcraft", "forever", "auction-house", "crafting", "mcp", "bun"],
+  "homepage": "https://github.com/edloidas/wow-artisan",
+  "bugs": {
+    "url": "https://github.com/edloidas/wow-artisan/issues",
+    "email": "edloidas@gmail.com"
+  },
+  "author": "Mikita Taukachou <edloidas@gmail.com> (https://edloidas.io)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/edloidas/wow-artisan.git"
+  },
+  "type": "module",
+  "bin": {
+    "wow-artisan": "src/cli.ts"
+  },
+  "scripts": {
+    "cli": "bun src/cli.ts",
+    "mcp": "bun src/mcp.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome lint .",
+    "lint:fix": "biome lint --write .",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "check": "bun run typecheck && biome check .",
+    "check:fix": "bun run typecheck && biome check --write .",
+    "test": "bun test",
+    "test:watch": "bun test --watch",
+    "test:ci": "bun test --bail --coverage",
+    "validate": "bun run check && bun run test:ci"
+  },
+  "engines": {
+    "bun": ">=1.4.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.0",
+    "cbor-x": "^1.6.6",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.15",
+    "@types/bun": "^1.4.2",
+    "typescript": "^7.0.2"
+  }
+}
