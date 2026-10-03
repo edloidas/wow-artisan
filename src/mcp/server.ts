@@ -240,8 +240,7 @@ export function createServer(deps: ServerDeps): McpServer {
     },
   );
 
-  registerAppTool(
-    server,
+  server.registerTool(
     'item_price',
     {
       title: 'Item price and market health',
@@ -252,7 +251,6 @@ export function createServer(deps: ServerDeps): McpServer {
         market,
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
-      _meta: viewMeta,
     },
     async (args) => {
       const advisor = await deps.advisorFor(args.market);
@@ -312,7 +310,7 @@ export function createServer(deps: ServerDeps): McpServer {
     server,
     'wow-artisan view',
     VIEW_URI,
-    { description: 'Tables for crafts, materials and item prices' },
+    { description: 'Tables for crafts and materials' },
     async () => ({
       contents: [
         { uri: VIEW_URI, mimeType: RESOURCE_MIME_TYPE, text: await (deps.view ?? buildView)() },

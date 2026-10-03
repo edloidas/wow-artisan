@@ -8,18 +8,14 @@ import {
 } from '@modelcontextprotocol/ext-apps';
 import { formatMoney } from '../money.ts';
 import type { evaluationJson, materialsJson, recommendationsJson } from '../serialize.ts';
-import type { itemPriceJson } from './server.ts';
 
 type Recommendations = ReturnType<typeof recommendationsJson>;
 type Materials = ReturnType<typeof materialsJson>;
-type ItemPrice = ReturnType<typeof itemPriceJson>;
 type Row = ReturnType<typeof evaluationJson>;
 type MaterialRow = Materials['groups'][string]['top'][number];
 type Group<T> = { total: number; top: T[] };
 
 const CATEGORIES = ['steady', 'vendor', 'volatile', 'thin', 'no-market'] as const;
-/** Item statuses styled like the recipe categories they lead to. */
-const STATUS_TAG: Record<string, string> = { stable: 'steady', none: 'no-market' };
 const CATEGORY_HINT: Record<string, string> = {
   steady: 'enough units, stable asking prices',
   vendor: 'sold to a merchant, no auction risk',
@@ -387,111 +383,12 @@ function renderMaterials(data: Materials): Child[] {
   ];
 }
 
-function sparkline(history: { date: string; min: number }[]): Child {
-  if (history.length < 2) return null;
-  const width = 300;
-  const height = 64;
-  const values = history.map((d) => d.min);
-  const low = Math.min(...values);
-  const span = Math.max(...values) - low;
-  const points = history.map((d, i) => [
-    (i / (history.length - 1)) * (width - 8) + 4,
-    height - 6 - ((d.min - low) / (span || 1)) * (height - 12),
-  ]);
-  const ns = 'http://www.w3.org/2000/svg';
-  const svg = document.createElementNS(ns, 'svg');
-  svg.setAttribute('class', 'spark');
-  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
-  svg.setAttribute('preserveAspectRatio', 'none');
-  const path = document.createElementNS(ns, 'path');
-  path.setAttribute('d', points.map(([x, y], i) => `${i ? 'L' : 'M'}${x},${y}`).join(''));
-  svg.append(path);
-  const title = document.createElementNS(ns, 'title');
-  title.textContent = history.map((d) => `${d.date}: ${formatMoney(d.min)}`).join('\n');
-  svg.append(title);
-  const first = history[0];
-  const last = history.at(-1);
-  return h(
-    'div',
-    {},
-    h(
-      'div',
-      { class: 'muted' },
-      `Cheapest listing per scan day, ${first?.date} – ${last?.date}: low `,
-      money(low),
-      ', high ',
-      money(low + span),
-    ),
-    svg,
-  );
-}
-
-function stat(label: string, value: Child): HTMLElement {
-  return h(
-    'div',
-    { class: 'stat' },
-    h('div', { class: 'label' }, label),
-    h('div', { class: 'value' }, value),
-  );
-}
-
-function renderItem(data: ItemPrice): Child[] {
-  const { stats, cheapestToObtain: obtain, sell } = data;
-  const status = data.status.status;
-  return [
-    h(
-      'div',
-      { class: 'head' },
-      h('h2', {}, named(data.item)),
-      h('span', { class: `tag ${STATUS_TAG[status] ?? status}` }, status),
-      marketLine(data.market),
-    ),
-    warnings(data.warnings),
-    h(
-      'div',
-      { class: 'grid' },
-      stat(
-        'List at',
-        sell.listUnit === undefined
-          ? h('span', { class: 'muted' }, 'no auction')
-          : money(sell.listUnit),
-      ),
-      stat('Sale nets', money(sell.netUnit)),
-      stat('Vendor pays', vendor(sell.vendorUnit)),
-      stat('Usual price', money(data.usualPrice)),
-      stat('Cheapest listing', money(stats?.min)),
-      stat(stats?.lastSeen ? `Most seen (${stats.lastSeen})` : 'Listed', stats?.quantity ?? 0),
-    ),
-    ...data.status.reasons.map((r) => h('div', { class: 'flag' }, r)),
-    sparkline(stats?.history ?? []),
-    h('h3', {}, 'Cheapest to obtain'),
-    h(
-      'div',
-      {},
-      money(obtain.unit),
-      ` via ${obtain.source}`,
-      obtain.recipe ? ' — ' : '',
-      obtain.recipe ? link(obtain.recipe, obtain.recipeUrl) : '',
-    ),
-    obtain.materials
-      ? h(
-          'ul',
-          {},
-          ...obtain.materials.map((m) =>
-            h('li', {}, `${m.count} × `, named(m), ' — ', money(m.unitCost), ` each, ${m.source}`),
-          ),
-        )
-      : '',
-  ];
-}
-
 function render(payload: unknown) {
   const data = payload as Record<string, unknown> | undefined;
   let nodes: Child[];
   if (!data) nodes = [h('p', { class: 'empty' }, 'No data.')];
   else if ('holdings' in data) nodes = renderMaterials(data as Materials);
   else if ('groups' in data) nodes = renderRecommendations(data as Recommendations);
-  else if ('item' in data && 'sell' in data) nodes = renderItem(data as ItemPrice);
   else nodes = [h('pre', {}, JSON.stringify(data, null, 2))];
   const source = (data?.market as { source?: string } | undefined)?.source;
   if (source === 'ahledger')

@@ -92,10 +92,10 @@ exposes the server without authentication to whoever can reach the address.
 Tools: `recommend_crafts`, `evaluate_materials`, `item_price`, `find_items`,
 `list_markets`. All are read-only. Each returns its JSON both as
 `structuredContent` and as text. In hosts that support MCP Apps, such as Claude
-Desktop, `recommend_crafts`, `evaluate_materials` and `item_price` also render a
-view: tables by category with prices in gold, silver and copper, and rows that
-expand to show materials and risks. The item view adds a price history chart and
-Wowhead links. Other hosts show the JSON, and so does a Desktop build that does not
+Desktop, `recommend_crafts` and `evaluate_materials` also render a view: tables
+by category with prices in gold, silver and copper, Wowhead links, and rows that
+expand to show materials and risks. The lookup tools render nothing, so checking
+an item does not replace the table the answer is built on. Other hosts show the JSON, and so does a Desktop build that does not
 render the view; the answer is the same either way.
 
 ## How it decides
