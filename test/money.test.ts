@@ -10,6 +10,12 @@ describe('money', () => {
     expect(formatMoney(undefined)).toBe('-');
   });
 
+  test('exact amounts keep copper above a gold', () => {
+    expect(formatMoney(65_687, true)).toBe('6g56s87c');
+    expect(formatMoney(65_600, true)).toBe('6g56s');
+    expect(formatMoney(136, true)).toBe('1s36c');
+  });
+
   test('parses gold/silver/copper notation; a bare number is copper', () => {
     expect(parseMoney('1g20s5c')).toBe(12_005);
     expect(parseMoney('50s')).toBe(5_000);

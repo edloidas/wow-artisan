@@ -1,6 +1,11 @@
 import { DEFAULT_THRESHOLDS, type Thresholds } from './engine/classify.ts';
 import { type Holding, MaterialAdvisor, type MaterialReport } from './engine/materials.ts';
-import { Pricer } from './engine/pricer.ts';
+import {
+  DEFAULT_LISTING_HOURS,
+  isListingHours,
+  type ListingHours,
+  Pricer,
+} from './engine/pricer.ts';
 import {
   type RecipeFilter,
   type Recommendations,
@@ -31,6 +36,8 @@ export type AdvisorOptions = {
 export type Scope = RecipeFilter & {
   /** Other professions whose recipes may make intermediates, at any skill. */
   craftWith?: Profession[];
+  /** Listing hours for deposits; defaults to Auctionator's setting, else 24. */
+  listingHours?: ListingHours;
 };
 
 export class Advisor {
@@ -41,6 +48,8 @@ export class Advisor {
     readonly inventory: Inventory | undefined,
     readonly thresholds: Thresholds,
     readonly installation: Installation | undefined,
+    /** Auctionator's default listing duration when it is one Forever offers, else 24. */
+    readonly listingHours: ListingHours,
   ) {}
 
   static async create(options: AdvisorOptions = {}): Promise<Advisor> {
@@ -65,6 +74,9 @@ export class Advisor {
       inventory,
       thresholds,
       installation,
+      isListingHours(auctionator?.auctionDuration)
+        ? auctionator.auctionDuration
+        : DEFAULT_LISTING_HOURS,
     );
   }
 
@@ -85,6 +97,7 @@ export class Advisor {
       vendorBuy: this.vendorBuy,
       thresholds: this.thresholds,
       recipes: this.craftingRecipes(scope),
+      listingHours: scope.listingHours ?? this.listingHours,
     };
     return new Pricer(this.inventory ? { ...ctx, names: this.inventory.names } : ctx);
   }

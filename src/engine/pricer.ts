@@ -4,10 +4,17 @@ import { buyPrice, type Classification, classify, sellPrice, type Thresholds } f
 
 export const AUCTION_CUT = 0.05;
 /**
- * 24h deposit as a share of vendor sell price; an estimate, not verified for Forever.
- * Reported next to a sale, never subtracted from it, until an invoice confirms the rule.
+ * Deposit as a share of the vendor sell price, by listing hours. Forever lists for 2, 8 or 24
+ * hours (Auctionator's Forever constants); the rates are Classic Era's, not yet confirmed on
+ * Forever. Refunded on sale, lost when the auction expires.
  */
-export const DEPOSIT_SHARE = 0.15;
+export const DEPOSIT_RATES = { 2: 0.05, 8: 0.2, 24: 0.6 } as const;
+export type ListingHours = keyof typeof DEPOSIT_RATES;
+export const DEFAULT_LISTING_HOURS: ListingHours = 24;
+
+export function isListingHours(value: unknown): value is ListingHours {
+  return typeof value === 'number' && value in DEPOSIT_RATES;
+}
 const MAX_CRAFT_DEPTH = 3;
 
 export type CostSource = 'auction' | 'vendor' | 'craft' | 'unknown';
@@ -24,10 +31,13 @@ export type CostQuote = {
 };
 
 export type SaleQuote = {
-  /** Best copper per unit after fees, or undefined when it can't be sold anywhere known. */
+  /** Copper received per unit on the better route, after the auction cut. */
   unit?: number;
   via: 'auction' | 'vendor' | 'none';
+  /** Asking price per unit to list at, before the cut. */
+  auctionGross?: number;
   auctionNet?: number;
+  /** What a merchant pays per unit; 0 when the game data has no vendor price. */
   vendor: number;
   classification: Classification;
 };
@@ -39,6 +49,7 @@ export type PricerContext = {
   thresholds: Thresholds;
   /** Recipes the player may use to make intermediates. */
   recipes: Recipe[];
+  listingHours?: ListingHours;
   names?: Map<number, string>;
 };
 
@@ -68,15 +79,17 @@ export class Pricer {
   }
 
   classification(itemId: number): Classification {
-    return classify(
-      this.ctx.market.prices.get(itemId),
-      this.ctx.thresholds,
-      this.ctx.market.latestScan,
-    );
+    return classify(this.ctx.market.prices.get(itemId), this.ctx.thresholds, this.ctx.market);
   }
 
-  depositEstimate(itemId: number): number {
-    return this.vendorSell(itemId) * DEPOSIT_SHARE;
+  get listingHours(): ListingHours {
+    return this.ctx.listingHours ?? DEFAULT_LISTING_HOURS;
+  }
+
+  /** Undefined without a vendor price: the rule needs one, and 0 would read as a free listing. */
+  depositEstimate(itemId: number): number | undefined {
+    const vendor = this.vendorSell(itemId);
+    return vendor > 0 ? vendor * DEPOSIT_RATES[this.listingHours] : undefined;
   }
 
   cost(itemId: number, stack: number[] = []): CostQuote {
@@ -131,18 +144,17 @@ export class Pricer {
     const vendor = this.vendorSell(itemId);
     const tradeable = !this.ctx.game.items[itemId]?.boundOnPickup;
     const gross = classification.status === 'none' || !tradeable ? undefined : sellPrice(stats);
-    const auctionNet = gross === undefined ? undefined : gross * (1 - AUCTION_CUT);
-    if (auctionNet !== undefined && auctionNet >= vendor) {
-      return { unit: auctionNet, via: 'auction', auctionNet, vendor, classification };
+    if (gross === undefined) {
+      const quote: SaleQuote = { via: vendor > 0 ? 'vendor' : 'none', vendor, classification };
+      if (vendor > 0) quote.unit = vendor;
+      return quote;
     }
-    const quote: SaleQuote = {
-      via: vendor > 0 ? 'vendor' : 'none',
-      vendor,
-      classification,
-    };
-    if (vendor > 0) quote.unit = vendor;
-    if (auctionNet !== undefined) quote.auctionNet = auctionNet;
-    return quote;
+    const auctionNet = gross * (1 - AUCTION_CUT);
+    const prices = { auctionGross: gross, auctionNet, vendor, classification };
+    // On a tie the merchant wins: same money, no listing risk.
+    return auctionNet > vendor || vendor === 0
+      ? { ...prices, unit: auctionNet, via: 'auction' }
+      : { ...prices, unit: vendor, via: 'vendor' };
   }
 }
 

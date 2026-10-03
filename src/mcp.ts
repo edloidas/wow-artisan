@@ -5,15 +5,18 @@ import { z } from 'zod';
 import { Advisor, type Scope } from './advisor.ts';
 import { referencePrice } from './engine/classify.ts';
 import type { Holding } from './engine/materials.ts';
+import type { ListingHours } from './engine/pricer.ts';
 import { PROFESSIONS, type Profession } from './gamedata/types.ts';
 import { parseMoney } from './money.ts';
 import { listAhledgerMarkets } from './prices/ahledger.ts';
 import {
   classificationJson,
   marketJson,
+  marketWarnings,
   materialReportJson,
   partsJson,
   recommendationsJson,
+  saleJson,
 } from './serialize.ts';
 
 /** Saved scans and AHledger tables change slowly; reload an advisor after this long. */
@@ -49,17 +52,25 @@ const craftWith = z
   .array(z.enum(professionNames))
   .optional()
   .describe('Other professions allowed to make intermediates, e.g. mining to smelt bars');
+const listingHours = z
+  .union([z.literal(2), z.literal(8), z.literal(24)])
+  .optional()
+  .describe(
+    "Auction listing hours for the deposit (default: the player's Auctionator setting, else 24)",
+  );
 
 function scopeOf(args: {
   profession: Profession;
   maxSkill?: number | undefined;
   minSkill?: number | undefined;
   craftWith?: Profession[] | undefined;
+  listingHours?: ListingHours | undefined;
 }): Scope {
   const scope: Scope = { profession: args.profession };
   if (args.maxSkill !== undefined) scope.maxSkill = args.maxSkill;
   if (args.minSkill !== undefined) scope.minSkill = args.minSkill;
   if (args.craftWith?.length) scope.craftWith = args.craftWith;
+  if (args.listingHours !== undefined) scope.listingHours = args.listingHours;
   return scope;
 }
 
@@ -74,7 +85,7 @@ server.registerTool(
   {
     title: 'Recommend profitable crafts',
     description:
-      'Recipes with a positive margin from bought or crafted materials, grouped by the health of their markets: steady (enough units, stable asking prices), volatile, thin (few units or missing from the latest scan) and no-market. ifSold assumes every unit sells; nothing records sales, so it is not a forecast. Copper amounts: 10000 = 1g.',
+      'Recipes with a positive margin from bought or crafted materials, grouped by where the product sells and the health of its markets: steady (enough units, stable asking prices, seen on most recent full scans), vendor (sold to a merchant, no auction risk), volatile, thin (few units, missing from the latest scan, or seen on few scans) and no-market. Each row has the auction price to list at, what a merchant pays, profit if sold and if a listing expires once (losing its deposit) and the units go to a merchant, and warnings when a deposit outweighs what the auction earns. ifSold assumes every unit sells; nothing records sales, so it is not a forecast. Pass on any top-level warnings. Copper amounts: 10000 = 1g.',
     inputSchema: {
       profession,
       maxSkill,
@@ -91,6 +102,7 @@ server.registerTool(
           "Minimum profit per craft, e.g. '50s', '1g20s', or copper as a number (default 1s)",
         ),
       craftWith,
+      listingHours,
       market,
       limit: z
         .number()
@@ -157,6 +169,7 @@ server.registerTool(
     if (holdings.length === 0) throw new Error('Pass items, or fromInventory: true');
     return json({
       market: marketJson(advisor.market),
+      warnings: marketWarnings(advisor.market),
       materials: advisor.materials(scope, holdings, args.limit ?? 5).map(materialReportJson),
     });
   },
@@ -167,7 +180,7 @@ server.registerTool(
   {
     title: 'Item price and market health',
     description:
-      'Market stats for one item: cheapest listing, usual price, listed quantity, history, market status, the cheapest way to obtain it, and what selling it nets.',
+      'Market stats for one item: cheapest listing, usual price, listed quantity, history, market status, the cheapest way to obtain it, the auction price to list it at, what that nets, and what a merchant pays.',
     inputSchema: {
       item: z.string().describe('Item name or id'),
       market,
@@ -183,6 +196,7 @@ server.registerTool(
     const sale = pricer.sale(itemId);
     return json({
       market: marketJson(advisor.market),
+      warnings: marketWarnings(advisor.market),
       item: { itemId, name: pricer.name(itemId), info: advisor.game.items[itemId] },
       stats: stats ?? null,
       usualPrice: referencePrice(stats),
@@ -193,11 +207,7 @@ server.registerTool(
         recipe: cost.recipe?.name,
         materials: cost.parts ? partsJson(pricer, cost.parts) : undefined,
       },
-      sell: {
-        unit: sale.unit === undefined ? undefined : Math.round(sale.unit),
-        via: sale.via,
-        vendor: sale.vendor,
-      },
+      sell: saleJson(sale),
     });
   },
 );

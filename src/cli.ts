@@ -3,12 +3,13 @@ import { parseArgs } from 'node:util';
 import { Advisor, isProfession, type Scope } from './advisor.ts';
 import type { Thresholds } from './engine/classify.ts';
 import type { Holding, MaterialReport } from './engine/materials.ts';
-import { DEPOSIT_SHARE, type Pricer } from './engine/pricer.ts';
+import { DEPOSIT_RATES, isListingHours, type Pricer } from './engine/pricer.ts';
 import type { Category, Evaluation } from './engine/recommend.ts';
 import { loadGameData } from './gamedata/load.ts';
 import type { Profession } from './gamedata/types.ts';
 import { formatMoney, parseMoney } from './money.ts';
 import { listAhledgerMarkets } from './prices/ahledger.ts';
+import { marketFreshness } from './prices/freshness.ts';
 import { materialReportJson, recommendationsJson } from './serialize.ts';
 import { FALLBACK_BUILD, findInstallation } from './wow.ts';
 
@@ -27,6 +28,7 @@ Options:
   -s, --skill <n>           your skill: hide recipes that need more to learn
       --min-skill <n>       hide recipes learnable below this skill
       --min-profit <money>  e.g. 50s, 1g20s, 2g (default 1s)
+      --hours <2|8|24>      listing duration for deposits (default: Auctionator's, else 24)
       --craft-with <name>   another profession that may make intermediates (repeatable)
   -m, --market <spec>       auctionator[:realm] (default) or ahledger:<market id>
       --have <item:qty>     a material you own, by name or id (repeatable)
@@ -42,8 +44,9 @@ Options:
 
 const CATEGORY_TITLES: Record<Category, string> = {
   steady: 'Steady: enough units, stable asking prices',
+  vendor: 'Vendor: sell to a merchant, no auction risk or deposit',
   volatile: 'Volatile: asking prices jump around',
-  thin: 'Thin: few units, or missing from the latest scan',
+  thin: 'Thin: few units, missing from the latest scan, or seen on few scans',
   'no-market': 'No market: nothing listed, no vendor floor (cost only)',
 };
 
@@ -55,6 +58,7 @@ async function main(): Promise<void> {
       skill: { type: 'string', short: 's' },
       'min-skill': { type: 'string' },
       'min-profit': { type: 'string' },
+      hours: { type: 'string' },
       'craft-with': { type: 'string', multiple: true },
       market: { type: 'string', short: 'm' },
       have: { type: 'string', multiple: true },
@@ -119,7 +123,7 @@ async function main(): Promise<void> {
     for (const [category, list] of Object.entries(result.groups) as [Category, Evaluation[]][]) {
       printGroup(pricer, category, list, limit, values.details ?? false);
     }
-    printRecipeNotes(advisor);
+    printRecipeNotes(advisor, pricer);
     return;
   }
 
@@ -148,6 +152,12 @@ function parseScope(values: Record<string, unknown>): Scope {
   const scope: Scope = { profession };
   if (values.skill !== undefined) scope.maxSkill = Number(values.skill);
   if (values['min-skill'] !== undefined) scope.minSkill = Number(values['min-skill']);
+  if (values.hours !== undefined) {
+    const hours = Number(values.hours);
+    if (!isListingHours(hours))
+      throw new Error(`Listing hours are 2, 8 or 24, got '${values.hours}'`);
+    scope.listingHours = hours;
+  }
   const craftWith = (values['craft-with'] as string[] | undefined) ?? [];
   const invalid = craftWith.filter((p) => !isProfession(p));
   if (invalid.length > 0) throw new Error(`Unknown profession: ${invalid.join(', ')}`);
@@ -165,10 +175,66 @@ function parseHolding(advisor: Advisor, spec: string): Holding {
 
 function printHeader(advisor: Advisor, scope: Scope): void {
   const skill = scope.maxSkill === undefined ? 'any skill' : `skill <= ${scope.maxSkill}`;
-  const age = advisor.market.observedAt
-    ? `, data from ${advisor.market.observedAt.slice(0, 16).replace('T', ' ')}`
-    : '';
-  console.log(`${scope.profession} (${skill}) on ${advisor.market.label}${age}`);
+  const { market } = advisor;
+  const { latestScan, scanAgeDays, stale } = marketFreshness(market);
+  let age = '';
+  if (latestScan !== undefined && scanAgeDays !== undefined) {
+    const ago = ['today', 'yesterday'][scanAgeDays] ?? `${scanAgeDays} days ago`;
+    age = `, latest scan ${latestScan} (${ago})`;
+  } else if (market.observedAt) {
+    age = `, prices from ${new Date(market.observedAt).toLocaleString()}`;
+  } else if (market.source === 'auctionator') {
+    age = ', no full scan yet';
+  }
+  console.log(`${scope.profession} (${skill}) on ${market.label}${age}`);
+  if (stale)
+    console.log(`! prices are ${scanAgeDays} days old; scan the auction house and /reload`);
+}
+
+type Column = { title: string; width: number; cell: (e: Evaluation) => string };
+
+function percent(ratio: number | undefined): string {
+  if (ratio === undefined) return '-';
+  return ratio >= 10 ? '>999%' : `${Math.round(ratio * 100)}%`;
+}
+
+function columnsFor(pricer: Pricer, category: Category): Column[] {
+  const units: Column = {
+    title: 'units',
+    width: 6,
+    cell: (e) => String(pricer.ctx.market.prices.get(e.recipe.output.itemId)?.quantity ?? 0),
+  };
+  const cost: Column = { title: 'cost', width: 10, cell: (e) => formatMoney(e.cost) };
+  const breakEven: Column = {
+    title: 'b-even/u',
+    width: 11,
+    cell: (e) => formatMoney(Math.ceil(e.breakEven), true),
+  };
+  const vendor: Column = {
+    title: 'vendor/u',
+    width: 10,
+    cell: (e) => (e.sale.vendor > 0 ? formatMoney(e.sale.vendor) : '-'),
+  };
+  const margin: Column = { title: 'margin', width: 7, cell: (e) => percent(e.marginRatio) };
+  if (category === 'no-market') return [cost, breakEven, units];
+  if (category === 'vendor') {
+    return [
+      cost,
+      vendor,
+      { title: 'profit', width: 10, cell: (e) => formatMoney(e.ifSold) },
+      margin,
+    ];
+  }
+  return [
+    cost,
+    breakEven,
+    { title: 'list at/u', width: 11, cell: (e) => formatMoney(e.sale.auctionGross, true) },
+    vendor,
+    { title: 'if sold', width: 10, cell: (e) => formatMoney(e.ifSold) },
+    margin,
+    { title: 'if unsold', width: 11, cell: (e) => formatMoney(e.ifUnsold) },
+    units,
+  ];
 }
 
 function printGroup(
@@ -180,21 +246,15 @@ function printGroup(
 ) {
   if (list.length === 0) return;
   console.log(`== ${CATEGORY_TITLES[category]} (${list.length})`);
-  const showSale = category !== 'no-market';
-  const saleHeader = showSale ? `${'sell at'.padStart(10)}${'if sold'.padStart(10)}  via    ` : '';
-  console.log(
-    `${'recipe'.padEnd(34)}${'cost'.padStart(10)}${'break-even'.padStart(11)}${saleHeader}${'units'.padStart(6)}  learn`,
-  );
+  const columns = columnsFor(pricer, category);
+  const header = columns.map((c) => c.title.padStart(c.width)).join('');
+  console.log(`${'recipe'.padEnd(32)}${header}  learn`);
   for (const e of list.slice(0, limit)) {
-    const units = pricer.ctx.market.prices.get(e.recipe.output.itemId)?.quantity ?? 0;
     const count = e.recipe.output.count > 1 ? ` x${e.recipe.output.count}` : '';
     const learn = `${e.recipe.learnSkillExact ? '' : '~'}${e.recipe.learnSkill}`;
-    const sale = showSale
-      ? `${formatMoney(e.sale.unit).padStart(10)}${formatMoney(e.ifSold).padStart(10)}  ${e.sale.via.padEnd(7)}`
-      : '';
-    console.log(
-      `${(e.recipe.name + count).slice(0, 33).padEnd(34)}${formatMoney(e.cost).padStart(10)}${formatMoney(e.breakEven).padStart(11)}${sale}${String(units).padStart(6)}  ${learn}`,
-    );
+    const cells = columns.map((c) => c.cell(e).padStart(c.width)).join('');
+    console.log(`${(e.recipe.name + count).slice(0, 31).padEnd(32)}${cells}  ${learn}`);
+    if (e.warnings.length > 0) console.log(`    ! risk: ${e.warnings.join('; ')}`);
     if (category !== 'steady' && e.reasons.length > 0)
       console.log(`    ! ${e.reasons.slice(0, 2).join('; ')}`);
     if (details) {
@@ -209,17 +269,20 @@ function printGroup(
   console.log('');
 }
 
-function printRecipeNotes(advisor: Advisor): void {
+function printRecipeNotes(advisor: Advisor, pricer: Pricer): void {
+  const hours = pricer.listingHours;
   const units =
     advisor.market.source === 'auctionator'
-      ? `units: the most seen on the last day the item was scanned (latest scan ${advisor.market.latestScan ?? 'unknown'}).`
+      ? 'units: the most seen on the last day the item was scanned.'
       : 'units: listed now.';
   console.log(
     [
-      'if sold: per craft, if every unit sells at "sell at" after the 5% cut. Nothing records sales, so this is not a forecast.',
-      'break-even: the lowest asking price per unit that covers the cost after the cut.',
+      'cost, if sold, if unsold and profit are per craft; prices marked /u are per unit.',
+      'list at: the auction asking price to type in, before the 5% cut. b-even: the lowest asking price that covers the cost after the cut.',
+      'if sold: if every unit sells at "list at", after the cut. Nothing records sales, so this is not a forecast. margin: "if sold" as a share of cost.',
+      'vendor: what a merchant pays (- when the game data has none). if unsold: the listing expires once, its deposit is lost, and every unit goes to a merchant.',
       `${units}`,
-      `Deposits are not included: estimated at ${Math.round(DEPOSIT_SHARE * 100)}% of the vendor price per unit for 24h, unverified.`,
+      `deposit: ${Math.round(DEPOSIT_RATES[hours] * 100)}% of the vendor price per unit for a ${hours}h listing (--hours); Classic Era rates, not yet confirmed on Forever. Refunded on sale, so "if sold" excludes it.`,
     ].join('\n'),
   );
 }
@@ -232,8 +295,12 @@ function printMaterial(report: MaterialReport): void {
   const status = report.sale.classification.status;
   const flag =
     status === 'stable' ? '' : `  [${status}: ${report.sale.classification.reasons.join('; ')}]`;
+  const { sale } = report;
+  const list =
+    sale.auctionGross === undefined ? '' : `list at ${formatMoney(sale.auctionGross, true)}, `;
+  const vendor = sale.vendor > 0 ? `; vendor pays ${formatMoney(sale.vendor)}` : '';
   console.log(
-    `  sell as is: ${formatMoney(report.sale.unit)} each -> ${formatMoney(report.sellTotal)} (${report.sale.via})${flag}`,
+    `  sell as is (${sale.via}): ${list}nets ${formatMoney(sale.unit)} each -> ${formatMoney(report.sellTotal)}${vendor}${flag}`,
   );
   if (report.quantity > report.marketQuantity && report.sale.via === 'auction') {
     console.log(`  ! you hold more than the market shows; selling it all will push the price down`);

@@ -1,4 +1,4 @@
-import type { PriceStats } from '../prices/types.ts';
+import type { Market, PriceStats } from '../prices/types.ts';
 
 export type Thresholds = {
   /** Fewer units listed than this makes a market thin. */
@@ -9,6 +9,10 @@ export type Thresholds = {
   maxSwing: number;
   /** Max drift of the 7-day median away from the 30-day median, as a share. */
   maxTrend: number;
+  /** Least share of recent full scans an item must appear on to count as a steady market. */
+  minPresence: number;
+  /** Least number of recent full scans an item must appear on, capped by how many exist. */
+  minSeenScans: number;
 };
 
 export const DEFAULT_THRESHOLDS: Thresholds = {
@@ -16,7 +20,11 @@ export const DEFAULT_THRESHOLDS: Thresholds = {
   maxSpread: 0.35,
   maxSwing: 3,
   maxTrend: 0.4,
+  minPresence: 0.5,
+  minSeenScans: 3,
 };
+
+export type Scans = Pick<Market, 'latestScan' | 'fullScans'>;
 
 /** Ordered from best to worst; a recipe takes the worst status of its parts. */
 export const ITEM_STATUSES = ['stable', 'volatile', 'thin', 'none'] as const;
@@ -25,6 +33,7 @@ export type ItemStatus = (typeof ITEM_STATUSES)[number];
 export type Classification = { status: ItemStatus; reasons: string[] };
 
 const RECENT_DAYS = 7;
+export const PRESENCE_WINDOW = 7;
 
 /** The usual price: recent medians when known, else the median of recent daily minimums. */
 export function referencePrice(stats: PriceStats | undefined): number | undefined {
@@ -72,10 +81,28 @@ export function availabilityProblem(
   return undefined;
 }
 
+/**
+ * Why the item can't be called a steady market from how rarely the recent full scans saw it,
+ * or undefined when it was seen often enough. Searches between scans don't count.
+ */
+export function presenceProblem(
+  stats: PriceStats,
+  thresholds: Thresholds,
+  fullScans: string[] | undefined,
+): string | undefined {
+  if (!fullScans || fullScans.length === 0) return undefined;
+  const window = fullScans.slice(-PRESENCE_WINDOW);
+  const days = new Set((stats.history ?? []).map((day) => day.date));
+  const seen = window.filter((date) => days.has(date)).length;
+  const tooFew = seen < Math.min(thresholds.minSeenScans, window.length);
+  if (!tooFew && seen / window.length >= thresholds.minPresence) return undefined;
+  return `seen on ${seen} of the last ${window.length} full scans`;
+}
+
 export function classify(
   stats: PriceStats | undefined,
   thresholds: Thresholds = DEFAULT_THRESHOLDS,
-  latestScan?: string,
+  scans: Scans = {},
 ): Classification {
   if (!stats || stats.quantity <= 0 || (stats.min === undefined && stats.median === undefined)) {
     return { status: 'none', reasons: ['nothing listed'] };
@@ -109,7 +136,9 @@ export function classify(
     }
   }
 
-  const problem = availabilityProblem(stats, thresholds, latestScan);
+  const problem =
+    availabilityProblem(stats, thresholds, scans.latestScan) ??
+    presenceProblem(stats, thresholds, scans.fullScans);
   if (problem) {
     status = 'thin';
     reasons.push(problem);

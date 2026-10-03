@@ -1,10 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import { classify, DEFAULT_THRESHOLDS, referencePrice } from '../src/engine/classify.ts';
 import { MaterialAdvisor } from '../src/engine/materials.ts';
-import { Pricer } from '../src/engine/pricer.ts';
+import { type ListingHours, Pricer } from '../src/engine/pricer.ts';
 import { recommend, selectRecipes } from '../src/engine/recommend.ts';
 import type { GameData, ItemInfo, Recipe } from '../src/gamedata/types.ts';
 import type { Market, PriceStats } from '../src/prices/types.ts';
+import { evaluationJson } from '../src/serialize.ts';
 
 const ORE = 1;
 const BAR = 2;
@@ -106,11 +107,11 @@ describe('classify', () => {
 
   test('local counts are reported as most seen, and an item missing from the latest scan is thin', () => {
     const seen = { min: 100, quantity: 2, lastSeen: '2026-09-29' };
-    expect(classify(seen, DEFAULT_THRESHOLDS, '2026-09-29').reasons).toEqual([
+    expect(classify(seen, DEFAULT_THRESHOLDS, { latestScan: '2026-09-29' }).reasons).toEqual([
       'at most 2 seen on 2026-09-29',
     ]);
     const stale = { min: 100, quantity: 50, lastSeen: '2026-09-27' };
-    expect(classify(stale, DEFAULT_THRESHOLDS, '2026-09-29')).toEqual({
+    expect(classify(stale, DEFAULT_THRESHOLDS, { latestScan: '2026-09-29' })).toEqual({
       status: 'thin',
       reasons: ['missing from the latest scan (last seen 2026-09-27)'],
     });
@@ -140,9 +141,15 @@ describe('Pricer', () => {
     });
   });
 
-  test('sells at the lower of the cheapest listing and the usual price, after cut and deposit', () => {
-    // min(1900, 1950) * 0.95; the deposit is reported separately, not subtracted
-    expect(pricer(['blacksmithing']).sale(SWORD)).toMatchObject({ unit: 1805, via: 'auction' });
+  test('lists at the lower of the cheapest listing and the usual price, and nets it after the cut', () => {
+    // min(1900, 1950), then * 0.95
+    expect(pricer(['blacksmithing']).sale(SWORD)).toMatchObject({
+      auctionGross: 1900,
+      auctionNet: 1805,
+      unit: 1805,
+      via: 'auction',
+      vendor: 100,
+    });
   });
 });
 
@@ -166,8 +173,10 @@ describe('recommend', () => {
       0,
     ).groups.steady;
     expect(sword?.breakEven).toBe(130 / 0.95);
-    // 15% of the 100c vendor price
-    expect(sword?.depositEstimate).toBe(15);
+    // 60% of the 100c vendor price for the default 24h listing
+    expect(sword?.depositEstimate).toBe(60);
+    // vendored: 100 - 130, then one lost deposit
+    expect(sword).toMatchObject({ ifVendored: -30, ifUnsold: -90 });
   });
 
   test('a reagent missing from the latest local scan makes the recipe thin', () => {
@@ -231,5 +240,156 @@ describe('MaterialAdvisor', () => {
     const [best] = advisor.report({ itemId: ORE, quantity: 10 }).uses;
     expect(best?.recipe.name).toBe('Smelt Bar');
     expect(best?.route).toStartWith('Sword');
+  });
+});
+
+describe('presence over full scans', () => {
+  const full = ['2026-09-24', '2026-09-27', '2026-09-29'];
+  const seenOn = (...dates: string[]): PriceStats => ({
+    min: 100,
+    quantity: 20,
+    lastSeen: dates.at(-1) as string,
+    history: dates.map((date) => ({ date, min: 100, quantity: 20 })),
+  });
+
+  test('an item missing from a recent full scan is not steady', () => {
+    const scans = { latestScan: '2026-09-29', fullScans: full };
+    expect(classify(seenOn('2026-09-27', '2026-09-29'), DEFAULT_THRESHOLDS, scans)).toEqual({
+      status: 'thin',
+      reasons: ['seen on 2 of the last 3 full scans'],
+    });
+    expect(classify(seenOn(...full), DEFAULT_THRESHOLDS, scans).status).toBe('stable');
+  });
+
+  test('searches between full scans do not count as presence', () => {
+    const stats = seenOn('2026-09-25', '2026-09-27', '2026-09-29');
+    expect(
+      classify(stats, DEFAULT_THRESHOLDS, { latestScan: '2026-09-29', fullScans: full }).status,
+    ).toBe('thin');
+  });
+
+  test('the minimum number of scans is capped by how many exist', () => {
+    const two = ['2026-09-27', '2026-09-29'];
+    const scans = { latestScan: '2026-09-29', fullScans: two };
+    expect(classify(seenOn(...two), DEFAULT_THRESHOLDS, scans).status).toBe('stable');
+  });
+
+  test('only the last seven full scans count', () => {
+    const days = Array.from({ length: 9 }, (_, i) => `2026-09-${String(i + 10)}`);
+    const scans = { latestScan: days.at(-1) as string, fullScans: days };
+    expect(classify(seenOn(...days.slice(-4)), DEFAULT_THRESHOLDS, scans).status).toBe('stable');
+    expect(classify(seenOn(...days.slice(-3)), DEFAULT_THRESHOLDS, scans).reasons).toEqual([
+      'seen on 3 of the last 7 full scans',
+    ]);
+  });
+
+  test('markets without scan days, like AHledger, skip the check', () => {
+    expect(classify({ min: 100, quantity: 20 }).status).toBe('stable');
+  });
+});
+
+describe('sale routes and listing risk', () => {
+  const PLATE = 10;
+  const items = {
+    [BAR]: item('Bar', 10),
+    [PLATE]: item('Plate', 1000),
+  };
+  const plate = recipe(301, 'Plate', 'blacksmithing', PLATE, [[BAR, 2]], 10);
+
+  function evaluate(
+    plateStats: PriceStats | undefined,
+    barPrice = 100,
+    listingHours: ListingHours = 24,
+  ) {
+    const marketPrices = new Map<number, PriceStats>([
+      [BAR, { median: barPrice, min: barPrice, quantity: 300 }],
+    ]);
+    if (plateStats) marketPrices.set(PLATE, plateStats);
+    const p = new Pricer({
+      game: { build: 'test', items, recipes: [plate] },
+      market: { id: 'test', label: 'test', source: 'ahledger', prices: marketPrices },
+      vendorBuy: new Map(),
+      thresholds: DEFAULT_THRESHOLDS,
+      recipes: [plate],
+      listingHours,
+    });
+    return { p, result: recommend(p, [plate], 0) };
+  }
+
+  test('a product with no listings that a merchant buys above cost goes to the vendor group', () => {
+    const { result } = evaluate(undefined);
+    const [row] = result.groups.vendor;
+    expect(row).toMatchObject({ ifSold: 1000 - 200, ifVendored: 800, warnings: [] });
+    expect(row?.depositEstimate).toBeUndefined();
+    expect(result.groups.steady).toEqual([]);
+  });
+
+  test('an auction netting no more than the vendor loses to it, and says so', () => {
+    // 1000 * 0.95 = 950 nets under the 1000 vendor price; a tie would go to the vendor too
+    const { p, result } = evaluate({ median: 1000, min: 1000, quantity: 50 });
+    expect(p.sale(PLATE)).toMatchObject({ via: 'vendor', unit: 1000, auctionGross: 1000 });
+    expect(result.groups.vendor[0]?.reasons).toEqual([
+      "product: auction nets 9s50c/u, under the vendor's 10s00c/u",
+    ]);
+  });
+
+  test('the deposit follows the listing hours: 5%, 20% or 60% of the vendor price', () => {
+    const stats = { median: 1100, min: 1100, quantity: 50 };
+    expect(evaluate(stats, 100, 2).result.groups.steady[0]?.depositEstimate).toBe(50);
+    expect(evaluate(stats, 100, 8).result.groups.steady[0]?.depositEstimate).toBe(200);
+    expect(evaluate(stats, 100, 24).result.groups.steady[0]?.depositEstimate).toBe(600);
+  });
+
+  test('an auction premium smaller than one deposit is flagged on a steady row', () => {
+    // nets 1045 vs vendor 1000; a 2h deposit is 50 per unit
+    const { result } = evaluate({ median: 1100, min: 1100, quantity: 50 }, 100, 2);
+    expect(result.groups.steady[0]?.warnings).toEqual([
+      'vendor pays 10s00c/u; the auction adds less than one ~50c/u deposit',
+    ]);
+  });
+
+  test('a deposit above the profit of a sale is flagged', () => {
+    // cost 2 * 480 = 960, nets 1045: profit 85 against a 600 deposit
+    const { result } = evaluate({ median: 1100, min: 1100, quantity: 50 }, 480);
+    expect(result.groups.steady[0]?.warnings).toEqual([
+      'one expired listing (~6s00c deposit) costs more than a sale earns',
+    ]);
+  });
+
+  test('a vendor floor under the cost shows in ifVendored, not as a warning', () => {
+    // cost 2 * 2000 = 4000, nets 4750 for 750; vendored: 1000 - 4000 = -3000
+    const { result } = evaluate({ median: 5000, min: 5000, quantity: 50 }, 2000);
+    expect(result.groups.steady[0]).toMatchObject({
+      ifSold: 750,
+      ifVendored: -3000,
+      ifUnsold: -3600,
+      warnings: [],
+    });
+  });
+
+  test('a product with no vendor price has no deposit estimate', () => {
+    const p = pricer(['blacksmithing']);
+    const all = selectRecipes(game.recipes, { profession: 'blacksmithing' });
+    const [dagger] = recommend(p, all, 0).groups.thin;
+    expect(dagger).toMatchObject({ ifVendored: -200, warnings: [] });
+    expect(dagger?.depositEstimate).toBeUndefined();
+  });
+
+  test('JSON names the listing price, what it nets and what a merchant pays', () => {
+    const { p, result } = evaluate({ median: 1100, min: 1100, quantity: 50 });
+    const [row] = result.groups.steady;
+    if (!row) throw new Error('expected a steady row');
+    const json = evaluationJson(p, row);
+    expect(json).toMatchObject({
+      sellVia: 'auction',
+      listUnit: 1100,
+      netUnit: 1045,
+      vendorUnit: 1000,
+      ifSold: 845,
+      ifVendored: 800,
+      ifUnsold: 200,
+      depositEstimate: 600,
+    });
+    expect(json).not.toHaveProperty('sellUnit');
   });
 });

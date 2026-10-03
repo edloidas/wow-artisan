@@ -27,8 +27,14 @@ export type Market = {
   id: string;
   label: string;
   source: MarketSource;
+  /** When AHledger built the price table; local scans carry their days instead. */
   observedAt?: string;
-  /** Day of the newest local scan; an item last seen before it was missing from that scan. */
+  /** Day of the newest full local scan; an item last seen before it was missing from that scan. */
   latestScan?: string;
+  /**
+   * Days with a full local scan, oldest first. Auctionator also records single-item searches
+   * as scan days, so a day counts only when it saw a large share of the realm's items.
+   */
+  fullScans?: string[];
   prices: Map<number, PriceStats>;
 };

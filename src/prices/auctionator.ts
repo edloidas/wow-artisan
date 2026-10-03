@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { Decoder } from 'cbor-x';
 import { isTable, type LuaTable, type LuaValue, luaBytes, readSavedVariables } from '../lua.ts';
 import type { DailyPrice, Market, PriceStats } from './types.ts';
@@ -6,6 +6,8 @@ import type { DailyPrice, Market, PriceStats } from './types.ts';
 // Auctionator counts scan days from 2020-01-01 (Source/Constants/Main.lua).
 const SCAN_DAY_0 = Date.UTC(2020, 0, 1);
 const DAY_MS = 86_400_000;
+/** A day is a full scan when it saw at least this share of the items on the busiest day. */
+const FULL_SCAN_SHARE = 0.5;
 
 const cbor = new Decoder({ mapsAsObjects: false });
 
@@ -30,16 +32,21 @@ export type AuctionatorData = {
   realms: Map<string, Map<number, PriceStats>>;
   /** Item id -> copper a vendor charges, for items the player has seen at a vendor. */
   vendorBuy: Map<number, number>;
-  modifiedAt: string;
+  /** Listing hours the player set as Auctionator's default, when it is set. */
+  auctionDuration?: number;
 };
 
 export function readAuctionator(file: string): AuctionatorData {
   const vars = readSavedVariables(readFileSync(file));
-  return {
+  const data: AuctionatorData = {
     realms: decodePriceDatabase(vars.AUCTIONATOR_PRICE_DATABASE),
     vendorBuy: decodeVendorCache(vars.AUCTIONATOR_VENDOR_PRICE_CACHE),
-    modifiedAt: statSync(file).mtime.toISOString(),
   };
+  const config = vars.AUCTIONATOR_CONFIG;
+  if (isTable(config) && typeof config.auction_duration === 'number') {
+    data.auctionDuration = config.auction_duration;
+  }
+  return data;
 }
 
 export function auctionatorMarket(data: AuctionatorData, realm?: string): Market {
@@ -55,16 +62,29 @@ export function auctionatorMarket(data: AuctionatorData, realm?: string): Market
     id: `auctionator:${chosen[0]}`,
     label: `${chosen[0]} (your Auctionator scans)`,
     source: 'auctionator',
-    observedAt: data.modifiedAt,
     prices: chosen[1],
   };
-  const days = [...chosen[1].values()]
-    .map((s) => s.lastSeen ?? '')
-    .filter(Boolean)
-    .sort();
-  const latestScan = days.at(-1);
-  if (latestScan) market.latestScan = latestScan;
+  const fullScans = findFullScans(chosen[1]);
+  const latest = fullScans.at(-1);
+  if (latest) {
+    market.fullScans = fullScans;
+    market.latestScan = latest;
+  }
   return market;
+}
+
+function findFullScans(prices: Map<number, PriceStats>): string[] {
+  const itemsPerDay = new Map<string, number>();
+  for (const stats of prices.values()) {
+    for (const day of stats.history ?? []) {
+      itemsPerDay.set(day.date, (itemsPerDay.get(day.date) ?? 0) + 1);
+    }
+  }
+  const busiest = Math.max(0, ...itemsPerDay.values());
+  return [...itemsPerDay]
+    .filter(([, count]) => count >= busiest * FULL_SCAN_SHARE)
+    .map(([date]) => date)
+    .sort();
 }
 
 function decodePriceDatabase(db: LuaValue | undefined): Map<string, Map<number, PriceStats>> {

@@ -6,6 +6,8 @@ import { Encoder } from 'cbor-x';
 import { parseCsv } from '../src/gamedata/csv.ts';
 import { parsePriceTable } from '../src/prices/ahledger.ts';
 import { auctionatorMarket, readAuctionator } from '../src/prices/auctionator.ts';
+import { marketFreshness } from '../src/prices/freshness.ts';
+import type { Market, PriceStats } from '../src/prices/types.ts';
 
 /** Lua string literal for arbitrary bytes, escaped the way WoW does. */
 function luaLiteral(bytes: Uint8Array): string {
@@ -46,7 +48,8 @@ describe('Auctionator', () => {
       file,
       Buffer.from(
         `AUCTIONATOR_PRICE_DATABASE = {\r\n["__dbversion"] = 8,\r\n["TestRealm"] = ${luaLiteral(blob)},\r\n}\r\n` +
-          `AUCTIONATOR_VENDOR_PRICE_CACHE = {\r\n["2880"] = 100,\r\n["2516"] = 0.045,\r\n}\r\n`,
+          `AUCTIONATOR_VENDOR_PRICE_CACHE = {\r\n["2880"] = 100,\r\n["2516"] = 0.045,\r\n}\r\n` +
+          `AUCTIONATOR_CONFIG = {\r\n["auction_duration"] = 8,\r\n}\r\n`,
         'latin1',
       ),
     );
@@ -66,7 +69,56 @@ describe('Auctionator', () => {
       ],
     });
     expect(data.vendorBuy.get(2880)).toBe(100);
+    expect(data.auctionDuration).toBe(8);
     expect(() => auctionatorMarket(data, 'Elsewhere')).toThrow('known: TestRealm');
+  });
+
+  test('days that saw only a few items are searches, not full scans', () => {
+    const seen = (...dates: string[]): PriceStats => ({
+      quantity: 1,
+      history: dates.map((date) => ({ date, min: 1 })),
+      lastSeen: dates.at(-1) as string,
+    });
+    const prices = new Map<number, PriceStats>([
+      [1, seen('2026-09-24', '2026-09-27')],
+      [2, seen('2026-09-24', '2026-09-27')],
+      [3, seen('2026-09-24', '2026-09-27', '2026-09-28')],
+      [4, seen('2026-09-27')],
+    ]);
+    const market = auctionatorMarket({
+      realms: new Map([['Realm', prices]]),
+      vendorBuy: new Map(),
+    });
+    expect(market.fullScans).toEqual(['2026-09-24', '2026-09-27']);
+    expect(market.latestScan).toBe('2026-09-27');
+    expect(market.observedAt).toBeUndefined();
+  });
+});
+
+describe('scan freshness', () => {
+  const scanned = (latestScan?: string): Market => {
+    const market: Market = { id: 'a', label: 'a', source: 'auctionator', prices: new Map() };
+    if (latestScan) market.latestScan = latestScan;
+    return market;
+  };
+  // Local dates: Auctionator's scan days start at the client's local midnight.
+  const at = (day: number, hour = 12) => new Date(2026, 9, day, hour);
+
+  test('counts whole local days since the latest scan, stale from two', () => {
+    expect(marketFreshness(scanned('2026-10-03'), at(3))).toEqual({
+      latestScan: '2026-10-03',
+      scanAgeDays: 0,
+      stale: false,
+    });
+    expect(marketFreshness(scanned('2026-10-02'), at(3, 0)).scanAgeDays).toBe(1);
+    expect(marketFreshness(scanned('2026-10-02'), at(3)).stale).toBe(false);
+    expect(marketFreshness(scanned('2026-10-01'), at(3)).stale).toBe(true);
+    expect(marketFreshness(scanned('2026-09-29'), at(3)).scanAgeDays).toBe(4);
+  });
+
+  test('a scan from the future is today, and no scan is not stale', () => {
+    expect(marketFreshness(scanned('2026-10-05'), at(3)).scanAgeDays).toBe(0);
+    expect(marketFreshness(scanned(), at(3))).toEqual({ stale: false });
   });
 });
 

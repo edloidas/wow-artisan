@@ -1,14 +1,18 @@
 export const COPPER_PER_SILVER = 100;
 export const COPPER_PER_GOLD = 10_000;
 
-export function formatMoney(copper: number | undefined): string {
+/** The two largest denominations; `exact` keeps copper, for prices typed into the game. */
+export function formatMoney(copper: number | undefined, exact = false): string {
   if (copper === undefined || !Number.isFinite(copper)) return '-';
   const sign = copper < 0 ? '-' : '';
   const total = Math.round(Math.abs(copper));
   const gold = Math.floor(total / COPPER_PER_GOLD);
   const silver = Math.floor((total % COPPER_PER_GOLD) / COPPER_PER_SILVER);
   const rest = total % COPPER_PER_SILVER;
-  if (gold > 0) return `${sign}${gold}g${String(silver).padStart(2, '0')}s`;
+  if (gold > 0) {
+    const coins = exact && rest > 0 ? `${String(rest).padStart(2, '0')}c` : '';
+    return `${sign}${gold}g${String(silver).padStart(2, '0')}s${coins}`;
+  }
   if (silver > 0) return `${sign}${silver}s${String(rest).padStart(2, '0')}c`;
   return `${sign}${rest}c`;
 }
