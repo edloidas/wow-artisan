@@ -11,7 +11,7 @@ const ACQUIRE_ON_SKILL_LEARN = '1';
 const MAX_REAGENTS = 8;
 const BONDING_ON_PICKUP = '1';
 /** Bump when the cached shape changes. */
-const CACHE_FILE = 'gamedata-v2.json';
+const CACHE_FILE = 'gamedata-v4.json';
 /** Most common gap between learn skill and yellow among recipes that come from plans. */
 const ESTIMATED_LEARN_OFFSET = 20;
 
@@ -64,6 +64,7 @@ export function buildGameData(build: string, tables: Tables): GameData {
     items[row.ID ?? ''] = {
       name: row.Display_lang ?? '',
       sellPrice: Number(row.SellPrice) || 0,
+      buyPrice: Number(row.BuyPrice) || 0,
       quality: Number(row.OverallQualityID) || 0,
       itemLevel: Number(row.ItemLevel) || 0,
       requiredLevel: Number(row.RequiredLevel) || 0,
@@ -108,7 +109,7 @@ export function buildGameData(build: string, tables: Tables): GameData {
     reagentsBySpell.set(row.SpellID ?? '', list);
   }
 
-  const learnFromPlans = planSkillByRecipeName(tables.items);
+  const plans = plansByRecipeName(tables.items);
 
   const recipes: Recipe[] = [];
   for (const [spell, ability] of abilities) {
@@ -118,9 +119,11 @@ export function buildGameData(build: string, tables: Tables): GameData {
     if (!output || !name || !profession) continue;
     const yellow = Number(ability.TrivialSkillLineRankLow) || 1;
     const grey = Number(ability.TrivialSkillLineRankHigh) || yellow;
-    const plan = learnFromPlans.get(`${ability.SkillLine}:${name}`);
-    const learn = resolveLearnSkill(ability, yellow, plan);
-    recipes.push({
+    const plan = plans.get(`${ability.SkillLine}:${name}`);
+    // A plan demanding more than the yellow threshold is a name collision, not this recipe.
+    const ownPlan = plan && plan.rank <= yellow ? plan : undefined;
+    const learn = resolveLearnSkill(ability, yellow, ownPlan?.rank);
+    const recipe: Recipe = {
       spellId: Number(spell),
       name,
       profession,
@@ -130,22 +133,25 @@ export function buildGameData(build: string, tables: Tables): GameData {
       grey,
       learnSkill: learn.skill,
       learnSkillExact: learn.exact,
-    });
+    };
+    if (ownPlan && ability.AcquireMethod !== ACQUIRE_ON_SKILL_LEARN)
+      recipe.planItemId = ownPlan.itemId;
+    recipes.push(recipe);
   }
   recipes.sort((a, b) => a.learnSkill - b.learnSkill || a.name.localeCompare(b.name));
   return { build, items, recipes };
 }
 
-/** "Plans: Copper Chain Belt" requiring Blacksmithing 35 -> "164:Copper Chain Belt" => 35. */
-function planSkillByRecipeName(items: Row[]): Map<string, number> {
-  const result = new Map<string, number>();
+/** "Plans: Copper Chain Belt" requiring Blacksmithing 35 -> "164:Copper Chain Belt" => its id, 35. */
+function plansByRecipeName(items: Row[]): Map<string, { itemId: number; rank: number }> {
+  const result = new Map<string, { itemId: number; rank: number }>();
   for (const row of items) {
     const skillLine = row.RequiredSkill;
     const rank = Number(row.RequiredSkillRank);
     const name = row.Display_lang ?? '';
     const separator = name.indexOf(': ');
     if (!skillLine || skillLine === '0' || !rank || separator === -1) continue;
-    result.set(`${skillLine}:${name.slice(separator + 2)}`, rank);
+    result.set(`${skillLine}:${name.slice(separator + 2)}`, { itemId: Number(row.ID), rank });
   }
   return result;
 }
@@ -156,7 +162,6 @@ function resolveLearnSkill(
   plan: number | undefined,
 ): { skill: number; exact: boolean } {
   if (ability.AcquireMethod === ACQUIRE_ON_SKILL_LEARN) return { skill: 1, exact: true };
-  // A plan demanding more than the yellow threshold is a name collision, not this recipe.
-  if (plan !== undefined && plan <= yellow) return { skill: plan, exact: true };
+  if (plan !== undefined) return { skill: plan, exact: true };
   return { skill: Math.max(1, yellow - ESTIMATED_LEARN_OFFSET), exact: false };
 }

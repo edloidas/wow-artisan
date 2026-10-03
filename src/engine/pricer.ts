@@ -55,7 +55,7 @@ export type PricerContext = {
 
 export class Pricer {
   private readonly producers = new Map<number, Recipe[]>();
-  private readonly costs = new Map<number, CostQuote>();
+  private readonly costs = new Map<string, CostQuote>();
 
   constructor(readonly ctx: PricerContext) {
     for (const recipe of ctx.recipes) {
@@ -92,8 +92,10 @@ export class Pricer {
     return vendor > 0 ? vendor * DEPOSIT_RATES[this.listingHours] : undefined;
   }
 
-  cost(itemId: number, stack: number[] = []): CostQuote {
-    const cached = this.costs.get(itemId);
+  /** Cheapest way to get `units` of an item for one craft, per unit. */
+  cost(itemId: number, stack: number[] = [], units = 1): CostQuote {
+    const key = `${itemId}:${units}`;
+    const cached = this.costs.get(key);
     if (cached) return cached;
     if (stack.includes(itemId)) return { source: 'unknown' };
 
@@ -102,7 +104,7 @@ export class Pricer {
     if (vendor !== undefined) options.push({ unit: vendor, source: 'vendor' });
 
     const stats = this.ctx.market.prices.get(itemId);
-    const auction = buyPrice(stats);
+    const auction = buyPrice(stats, units, this.ctx.thresholds.maxSpread);
     if (auction !== undefined) {
       options.push({
         unit: auction,
@@ -122,7 +124,7 @@ export class Pricer {
       (a, b) => (a?.unit === undefined || (b.unit ?? Infinity) < a.unit ? b : a),
       undefined,
     ) ?? { source: 'unknown' };
-    if (stack.length === 0) this.costs.set(itemId, best);
+    if (stack.length === 0) this.costs.set(key, best);
     return best;
   }
 
@@ -131,7 +133,7 @@ export class Pricer {
     const parts: Part[] = recipe.reagents.map((r) => ({
       itemId: r.itemId,
       count: r.count,
-      quote: this.cost(r.itemId, stack),
+      quote: this.cost(r.itemId, stack, r.count),
     }));
     if (parts.some((p) => p.quote.unit === undefined)) return { source: 'unknown', recipe, parts };
     const total = parts.reduce((sum, p) => sum + (p.quote.unit ?? 0) * p.count, 0);

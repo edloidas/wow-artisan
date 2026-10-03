@@ -52,6 +52,10 @@ const craftWith = z
   .array(z.enum(professionNames))
   .optional()
   .describe('Other professions allowed to make intermediates, e.g. mining to smelt bars');
+const trainerOnly = z
+  .boolean()
+  .optional()
+  .describe('Hide recipes taught by plan items, keeping those a trainer teaches');
 const listingHours = z
   .union([z.literal(2), z.literal(8), z.literal(24)])
   .optional()
@@ -65,12 +69,14 @@ function scopeOf(args: {
   minSkill?: number | undefined;
   craftWith?: Profession[] | undefined;
   listingHours?: ListingHours | undefined;
+  trainerOnly?: boolean | undefined;
 }): Scope {
   const scope: Scope = { profession: args.profession };
   if (args.maxSkill !== undefined) scope.maxSkill = args.maxSkill;
   if (args.minSkill !== undefined) scope.minSkill = args.minSkill;
   if (args.craftWith?.length) scope.craftWith = args.craftWith;
   if (args.listingHours !== undefined) scope.listingHours = args.listingHours;
+  if (args.trainerOnly) scope.trainerOnly = true;
   return scope;
 }
 
@@ -102,6 +108,7 @@ server.registerTool(
           "Minimum profit per craft, e.g. '50s', '1g20s', or copper as a number (default 1s)",
         ),
       craftWith,
+      trainerOnly,
       listingHours,
       market,
       limit: z
@@ -146,6 +153,7 @@ server.registerTool(
         ),
       maxSkill,
       craftWith,
+      trainerOnly,
       market,
       limit: z
         .number()

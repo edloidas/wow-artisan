@@ -16,6 +16,8 @@ export type RecipeFilter = {
   maxSkill?: number;
   /** Hide recipes learnable below this skill. */
   minSkill?: number;
+  /** Hide recipes taught by a plan item, keeping those a trainer teaches. */
+  trainerOnly?: boolean;
 };
 
 export type Evaluation = {
@@ -63,7 +65,8 @@ export function selectRecipes(recipes: Recipe[], filter: RecipeFilter): Recipe[]
     (r) =>
       r.profession === filter.profession &&
       (filter.maxSkill === undefined || r.learnSkill <= filter.maxSkill) &&
-      (filter.minSkill === undefined || r.learnSkill >= filter.minSkill),
+      (filter.minSkill === undefined || r.learnSkill >= filter.minSkill) &&
+      !(filter.trainerOnly && r.planItemId !== undefined),
   );
 }
 

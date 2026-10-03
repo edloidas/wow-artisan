@@ -69,6 +69,8 @@ export function evaluationJson(pricer: Pricer, e: Evaluation) {
     },
     learnSkill: e.recipe.learnSkill,
     learnSkillExact: e.recipe.learnSkillExact,
+    learnedFrom: e.recipe.planItemId === undefined ? 'trainer' : 'plan',
+    planItemId: e.recipe.planItemId,
     yellow: e.recipe.yellow,
     grey: e.recipe.grey,
     category: e.category,

@@ -27,6 +27,7 @@ Options:
   -p, --profession <name>   profession to advise on
   -s, --skill <n>           your skill: hide recipes that need more to learn
       --min-skill <n>       hide recipes learnable below this skill
+      --trainer-only        hide recipes taught by plans, keep trainer recipes
       --min-profit <money>  e.g. 50s, 1g20s, 2g (default 1s)
       --hours <2|8|24>      listing duration for deposits (default: Auctionator's, else 24)
       --craft-with <name>   another profession that may make intermediates (repeatable)
@@ -57,6 +58,7 @@ async function main(): Promise<void> {
       profession: { type: 'string', short: 'p' },
       skill: { type: 'string', short: 's' },
       'min-skill': { type: 'string' },
+      'trainer-only': { type: 'boolean' },
       'min-profit': { type: 'string' },
       hours: { type: 'string' },
       'craft-with': { type: 'string', multiple: true },
@@ -152,6 +154,7 @@ function parseScope(values: Record<string, unknown>): Scope {
   const scope: Scope = { profession };
   if (values.skill !== undefined) scope.maxSkill = Number(values.skill);
   if (values['min-skill'] !== undefined) scope.minSkill = Number(values['min-skill']);
+  if (values['trainer-only']) scope.trainerOnly = true;
   if (values.hours !== undefined) {
     const hours = Number(values.hours);
     if (!isListingHours(hours))
@@ -174,7 +177,10 @@ function parseHolding(advisor: Advisor, spec: string): Holding {
 }
 
 function printHeader(advisor: Advisor, scope: Scope): void {
-  const skill = scope.maxSkill === undefined ? 'any skill' : `skill <= ${scope.maxSkill}`;
+  const skill = [
+    scope.maxSkill === undefined ? 'any skill' : `skill <= ${scope.maxSkill}`,
+    ...(scope.trainerOnly ? ['trainer recipes only'] : []),
+  ].join(', ');
   const { market } = advisor;
   const { latestScan, scanAgeDays, stale } = marketFreshness(market);
   let age = '';
@@ -251,7 +257,8 @@ function printGroup(
   console.log(`${'recipe'.padEnd(32)}${header}  learn`);
   for (const e of list.slice(0, limit)) {
     const count = e.recipe.output.count > 1 ? ` x${e.recipe.output.count}` : '';
-    const learn = `${e.recipe.learnSkillExact ? '' : '~'}${e.recipe.learnSkill}`;
+    const plan = e.recipe.planItemId === undefined ? '' : ' plan';
+    const learn = `${e.recipe.learnSkillExact ? '' : '~'}${e.recipe.learnSkill}${plan}`;
     const cells = columns.map((c) => c.cell(e).padStart(c.width)).join('');
     console.log(`${(e.recipe.name + count).slice(0, 31).padEnd(32)}${cells}  ${learn}`);
     if (e.warnings.length > 0) console.log(`    ! risk: ${e.warnings.join('; ')}`);
@@ -282,6 +289,7 @@ function printRecipeNotes(advisor: Advisor, pricer: Pricer): void {
       'if sold: if every unit sells at "list at", after the cut. Nothing records sales, so this is not a forecast. margin: "if sold" as a share of cost.',
       'vendor: what a merchant pays (- when the game data has none). if unsold: the listing expires once, its deposit is lost, and every unit goes to a merchant.',
       `${units}`,
+      'learn: the skill to learn the recipe; ~ is estimated, plan means a plan item teaches it (--trainer-only hides those).',
       `deposit: ${Math.round(DEPOSIT_RATES[hours] * 100)}% of the vendor price per unit for a ${hours}h listing (--hours); Classic Era rates, not yet confirmed on Forever. Refunded on sale, so "if sold" excludes it.`,
     ].join('\n'),
   );

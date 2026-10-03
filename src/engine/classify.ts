@@ -44,11 +44,26 @@ export function referencePrice(stats: PriceStats | undefined): number | undefine
   return median(recent) ?? stats.min;
 }
 
-/** What buying a handful of units costs right now. */
-export function buyPrice(stats: PriceStats | undefined): number | undefined {
+/** Units on the market, as a multiple of what one purchase needs, to trust the cheapest listing. */
+const DEEP_MARKET = 10;
+
+/**
+ * What buying `units` costs per unit right now. Scans keep no price ladder, only the cheapest
+ * listing and the total units on offer, so a small buy from a deep market takes the cheapest
+ * listing, unless it is an outlier far under the usual price; anything else pays the usual price.
+ */
+export function buyPrice(
+  stats: PriceStats | undefined,
+  units = 1,
+  maxSpread = DEFAULT_THRESHOLDS.maxSpread,
+): number | undefined {
   if (!stats || stats.quantity <= 0) return undefined;
-  if (stats.median !== undefined) return stats.median;
   const reference = referencePrice(stats);
+  if (stats.min !== undefined && stats.quantity >= units * DEEP_MARKET) {
+    const outlier = reference !== undefined && (reference - stats.min) / reference > maxSpread;
+    if (!outlier) return stats.min;
+  }
+  if (stats.median !== undefined) return stats.median;
   if (stats.min === undefined) return reference;
   return reference === undefined ? stats.min : Math.max(stats.min, reference);
 }

@@ -25,6 +25,9 @@ cached under `~/.cache/wow-artisan/<build>/`.
 # Profitable crafts for your skill, at least 20s profit per craft
 bun run cli recipes -p blacksmithing -s 150 --min-profit 20s
 
+# Only recipes a trainer teaches, hiding those that need a plan
+bun run cli recipes -p blacksmithing -s 150 --trainer-only
+
 # Same, smelting bars yourself instead of buying them, with the materials listed
 bun run cli recipes -p blacksmithing -s 150 --craft-with mining --details
 
@@ -53,10 +56,14 @@ Tools: `recommend_crafts`, `evaluate_materials`, `item_price`, `find_items`,
 
 ## How it decides
 
-- **Cost** of each reagent is the cheapest of: the auction house (median of what
-  is listed, or the higher of the cheapest listing and the usual price for your
-  own scans), the vendor (prices Auctionator cached when you visited one), or
-  crafting it yourself from recipes in scope, up to three steps deep.
+- **Cost** of each reagent is the cheapest of: the auction house, a merchant, or
+  crafting it yourself from recipes in scope, up to three steps deep. On the
+  auction house a craft's few units come at the cheapest listing when the market
+  holds at least ten times as many and that listing is not far under the usual
+  price; otherwise at the usual price (AHledger: the median of what is listed).
+  Scans keep no price ladder, so a larger buy can't be priced along it. Merchant
+  prices are those Auctionator cached when you visited one, plus fluxes, coal,
+  coarse thread and green dye from trade-supply merchants.
 - **List at** is the asking price to type into the auction house: the lower of
   the cheapest listing and the usual price. A sale nets it minus the 5% cut.
   **Vendor** is what a merchant pays. The product goes the way that nets more; on
@@ -104,6 +111,10 @@ Tools: `recommend_crafts`, `evaluate_materials`, `item_price`, `find_items`,
 
 ## Caveats
 
+- `--trainer-only` hides recipes taught by a "Plans:" item, matched by name. It
+  can't know which plans you own, and a recipe learned from a quest without a
+  plan item still counts as a trainer recipe. The `learn` column marks plan
+  recipes.
 - Learn skill marked `~` is estimated. Only plans carry the skill a recipe needs;
   for trainer recipes it is the yellow threshold minus 20, the most common gap.
 - The deposit rates come from Classic Era (a Chronoboon with a 2g50s vendor

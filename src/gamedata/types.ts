@@ -9,6 +9,8 @@ export type ItemInfo = {
   name: string;
   /** Copper a vendor pays for one. */
   sellPrice: number;
+  /** Copper a merchant charges, if one sells it; game data has a value even for items none sells. */
+  buyPrice: number;
   quality: number;
   itemLevel: number;
   requiredLevel: number;
@@ -34,6 +36,8 @@ export type Recipe = {
    * only plan/pattern items do.
    */
   learnSkillExact: boolean;
+  /** The plan item that teaches the recipe; absent for recipes learned from a trainer. */
+  planItemId?: number;
 };
 
 export type GameData = {

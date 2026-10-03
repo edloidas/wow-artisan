@@ -1,9 +1,11 @@
 import { describe, expect, test } from 'bun:test';
-import { classify, DEFAULT_THRESHOLDS, referencePrice } from '../src/engine/classify.ts';
+import { buyPrice, classify, DEFAULT_THRESHOLDS, referencePrice } from '../src/engine/classify.ts';
 import { MaterialAdvisor } from '../src/engine/materials.ts';
 import { type ListingHours, Pricer } from '../src/engine/pricer.ts';
 import { recommend, selectRecipes } from '../src/engine/recommend.ts';
+import { buildGameData } from '../src/gamedata/load.ts';
 import type { GameData, ItemInfo, Recipe } from '../src/gamedata/types.ts';
+import { tradeSupplyPrices } from '../src/gamedata/vendors.ts';
 import type { Market, PriceStats } from '../src/prices/types.ts';
 import { evaluationJson } from '../src/serialize.ts';
 
@@ -15,7 +17,15 @@ const HELM = 5;
 const DAGGER = 6;
 
 function item(name: string, sellPrice: number, boundOnPickup = false): ItemInfo {
-  return { name, sellPrice, quality: 1, itemLevel: 10, requiredLevel: 5, boundOnPickup };
+  return {
+    name,
+    sellPrice,
+    buyPrice: 0,
+    quality: 1,
+    itemLevel: 10,
+    requiredLevel: 5,
+    boundOnPickup,
+  };
 }
 
 function recipe(
@@ -129,14 +139,32 @@ describe('classify', () => {
   });
 });
 
+describe('buyPrice', () => {
+  const stats = { min: 95, median7d: 100, quantity: 300 };
+
+  test('a small buy from a deep market pays the cheapest listing', () => {
+    expect(buyPrice(stats, 4)).toBe(95);
+    expect(buyPrice({ min: 95, median: 100, quantity: 300 }, 4)).toBe(95);
+  });
+
+  test('a buy that is a large share of the market pays the usual price', () => {
+    expect(buyPrice(stats, 40)).toBe(100);
+    expect(buyPrice({ min: 95, median: 110, quantity: 300 }, 40)).toBe(110);
+  });
+
+  test('a lone cheap listing far under the usual price is not trusted', () => {
+    expect(buyPrice({ min: 50, median7d: 100, quantity: 300 }, 4)).toBe(100);
+  });
+});
+
 describe('Pricer', () => {
   test('buys a reagent when nothing cheaper is in scope', () => {
-    expect(pricer(['blacksmithing']).cost(BAR)).toMatchObject({ unit: 100, source: 'auction' });
+    expect(pricer(['blacksmithing']).cost(BAR)).toMatchObject({ unit: 95, source: 'auction' });
   });
 
   test('crafts an intermediate when a helper profession makes it cheaper', () => {
     expect(pricer(['blacksmithing', 'mining']).cost(BAR)).toMatchObject({
-      unit: 20,
+      unit: 18,
       source: 'craft',
     });
   });
@@ -161,7 +189,7 @@ describe('recommend', () => {
     expect(result.considered).toBe(2);
     expect(result.bound).toBe(1);
     expect(result.groups.steady.map((e) => [e.recipe.name, e.ifSold])).toEqual([
-      ['Sword', 1805 - (4 * 20 + 50)],
+      ['Sword', 1805 - (4 * 18 + 50)],
     ]);
   });
 
@@ -172,11 +200,11 @@ describe('recommend', () => {
       selectRecipes(game.recipes, { profession: 'blacksmithing', maxSkill: 100 }),
       0,
     ).groups.steady;
-    expect(sword?.breakEven).toBe(130 / 0.95);
+    expect(sword?.breakEven).toBe(122 / 0.95);
     // 60% of the 100c vendor price for the default 24h listing
     expect(sword?.depositEstimate).toBe(60);
-    // vendored: 100 - 130, then one lost deposit
-    expect(sword).toMatchObject({ ifVendored: -30, ifUnsold: -90 });
+    // vendored: 100 - 122, then one lost deposit
+    expect(sword).toMatchObject({ ifVendored: -22, ifUnsold: -82 });
   });
 
   test('a reagent missing from the latest local scan makes the recipe thin', () => {
@@ -371,7 +399,7 @@ describe('sale routes and listing risk', () => {
     const p = pricer(['blacksmithing']);
     const all = selectRecipes(game.recipes, { profession: 'blacksmithing' });
     const [dagger] = recommend(p, all, 0).groups.thin;
-    expect(dagger).toMatchObject({ ifVendored: -200, warnings: [] });
+    expect(dagger).toMatchObject({ ifVendored: -190, warnings: [] });
     expect(dagger?.depositEstimate).toBeUndefined();
   });
 
@@ -391,5 +419,70 @@ describe('sale routes and listing risk', () => {
       depositEstimate: 600,
     });
     expect(json).not.toHaveProperty('sellUnit');
+  });
+});
+
+describe('trainer and plan recipes', () => {
+  const ability = (spell: string, yellow: string) => ({
+    SkillLine: '164',
+    Spell: spell,
+    AcquireMethod: '2',
+    TrivialSkillLineRankLow: yellow,
+    TrivialSkillLineRankHigh: String(Number(yellow) + 20),
+  });
+  const data = buildGameData('test', {
+    abilities: [ability('1', '50'), ability('2', '120'), ability('3', '40')],
+    names: [
+      { ID: '1', Name_lang: 'Copper Belt' },
+      { ID: '2', Name_lang: 'Bronze Poniard' },
+      { ID: '3', Name_lang: 'Iron Spaulders' },
+    ],
+    effects: ['1', '2', '3'].map((spell) => ({
+      SpellID: spell,
+      Effect: '24',
+      DifficultyID: '0',
+      EffectItemType: `10${spell}`,
+      EffectBasePointsF: '1',
+    })),
+    reagents: [],
+    items: [
+      {
+        ID: '900',
+        Display_lang: 'Plans: Bronze Poniard',
+        RequiredSkill: '164',
+        RequiredSkillRank: '100',
+      },
+      // Demands more than the recipe's yellow 40: a different recipe with the same name.
+      {
+        ID: '901',
+        Display_lang: 'Plans: Iron Spaulders',
+        RequiredSkill: '164',
+        RequiredSkillRank: '200',
+      },
+    ],
+  });
+  const byName = (name: string) => data.recipes.find((r) => r.name === name);
+
+  test('a recipe taught by a plan item records it, and a name collision does not', () => {
+    expect(byName('Bronze Poniard')).toMatchObject({ planItemId: 900, learnSkill: 100 });
+    expect(byName('Copper Belt')?.planItemId).toBeUndefined();
+    expect(byName('Iron Spaulders')?.planItemId).toBeUndefined();
+  });
+
+  test('trainerOnly hides plan recipes', () => {
+    const names = (trainerOnly: boolean) =>
+      selectRecipes(data.recipes, { profession: 'blacksmithing', trainerOnly }).map((r) => r.name);
+    expect(names(false)).toContain('Bronze Poniard');
+    expect(names(true)).toEqual(['Iron Spaulders', 'Copper Belt']);
+  });
+});
+
+describe('trade supplies', () => {
+  test('only listed trade supplies get a merchant price from game data', () => {
+    const items = {
+      3466: { ...item('Strong Flux', 500), buyPrice: 2000 },
+      2770: { ...item('Copper Ore', 5), buyPrice: 20 },
+    };
+    expect([...tradeSupplyPrices({ build: 'test', items, recipes: [] })]).toEqual([[3466, 2000]]);
   });
 });

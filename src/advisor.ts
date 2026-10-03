@@ -14,6 +14,7 @@ import {
 } from './engine/recommend.ts';
 import { loadGameData } from './gamedata/load.ts';
 import { type GameData, PROFESSIONS, type Profession, type Recipe } from './gamedata/types.ts';
+import { tradeSupplyPrices } from './gamedata/vendors.ts';
 import { type Inventory, readSyndicator } from './inventory/syndicator.ts';
 import { fetchAhledgerMarket } from './prices/ahledger.ts';
 import { type AuctionatorData, auctionatorMarket, readAuctionator } from './prices/auctionator.ts';
@@ -34,7 +35,7 @@ export type AdvisorOptions = {
 };
 
 export type Scope = RecipeFilter & {
-  /** Other professions whose recipes may make intermediates, at any skill. */
+  /** Other professions whose recipes may make intermediates, at any skill; `trainerOnly` applies. */
   craftWith?: Profession[];
   /** Listing hours for deposits; defaults to Auctionator's setting, else 24. */
   listingHours?: ListingHours;
@@ -70,7 +71,7 @@ export class Advisor {
     return new Advisor(
       game,
       market,
-      auctionator?.vendorBuy ?? new Map(),
+      new Map([...tradeSupplyPrices(game), ...(auctionator?.vendorBuy ?? [])]),
       inventory,
       thresholds,
       installation,
@@ -84,9 +85,13 @@ export class Advisor {
   private craftingRecipes(scope: Scope): Recipe[] {
     const own = selectRecipes(this.game.recipes, {
       profession: scope.profession,
-      ...skillOf(scope),
+      ...knownOf(scope),
     });
-    const helpers = this.game.recipes.filter((r) => scope.craftWith?.includes(r.profession));
+    const helpers = this.game.recipes.filter(
+      (r) =>
+        scope.craftWith?.includes(r.profession) &&
+        !(scope.trainerOnly && r.planItemId !== undefined),
+    );
     return [...own, ...helpers];
   }
 
@@ -154,10 +159,12 @@ export class Advisor {
   }
 }
 
-function skillOf(scope: Scope): Pick<RecipeFilter, 'maxSkill' | 'minSkill'> {
-  const filter: Pick<RecipeFilter, 'maxSkill' | 'minSkill'> = {};
+/** What limits the player's own recipes: skill, and whether plans are available. */
+function knownOf(scope: Scope): Omit<RecipeFilter, 'profession'> {
+  const filter: Omit<RecipeFilter, 'profession'> = {};
   if (scope.maxSkill !== undefined) filter.maxSkill = scope.maxSkill;
   if (scope.minSkill !== undefined) filter.minSkill = scope.minSkill;
+  if (scope.trainerOnly) filter.trainerOnly = true;
   return filter;
 }
 
