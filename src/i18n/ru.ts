@@ -38,7 +38,9 @@ export const ru: Messages = {
       --min-profit <сумма>  например 50с, 1з20с, 2з или 50s, 1g20s (по умолчанию 1с; для materials — выгода сверх продажи, по умолчанию 1м)
       --crafts <n>          recipes: покупать реагенты на столько крафтов (по умолчанию 1)
       --hours <2|8|24>      срок лота для расчёта залога (по умолчанию как в Auctionator, иначе 24)
-      --craft-with <имя>    другая профессия, которая может делать промежуточные материалы (можно повторять)
+      --craft-with <имя[:навык]>  другая ваша профессия с вашим навыком в ней, которая
+                            может делать промежуточные материалы, напр. mining:120 (можно повторять;
+                            без навыка считается не ниже --skill)
   -m, --market <spec>       auctionator[:realm] (по умолчанию) или ahledger:<id рынка>
       --have <предмет:кол>  ваш материал, по названию (русскому или английскому) или id (можно повторять)
       --inventory           взять материалы из сохранённого инвентаря Syndicator
@@ -97,6 +99,8 @@ export const ru: Messages = {
   noFullScan: ', полного скана ещё нет',
   auctionatorMarket: (realm) => `${realm} (ваши сканы Auctionator)`,
   header: (profession, skill, market, age) => `${profession} (${skill}), ${market}${age}`,
+  helper: (profession, skill) => `${profession} (${skill})`,
+  craftingWith: (helpers) => `промежуточные материалы также из: ${helpers}`,
   stale: (n) => `! ценам ${days(n)}; отсканируйте аукцион и сделайте /reload`,
   summary: (considered, unpriced, bound, minProfit) =>
     `Рецептов в диапазоне: ${considered}; пропущено: без цены реагентов — ${unpriced}, персональных при поднятии — ${bound}; мин. прибыль ${money(minProfit)}`,

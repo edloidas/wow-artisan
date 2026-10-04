@@ -42,9 +42,32 @@ export type AdvisorOptions = {
   thresholds?: Partial<Thresholds>;
 };
 
+/** Another profession the player has, whose recipes may make intermediates. */
+export type Helper = {
+  profession: Profession;
+  /** Its skill: recipes that need more to learn are out. */
+  maxSkill?: number;
+};
+
+/**
+ * One helper per profession with its skill, the highest when given twice; one given none is taken
+ * to be at least as skilled as the main profession, as a gathering profession usually is for what
+ * its partner crafts.
+ */
+export function helpersOf(scope: Scope): Helper[] {
+  const skills = new Map<Profession, number>();
+  for (const helper of scope.craftWith ?? []) {
+    const skill = helper.maxSkill ?? scope.maxSkill ?? Infinity;
+    skills.set(helper.profession, Math.max(skills.get(helper.profession) ?? 0, skill));
+  }
+  return [...skills].map(([profession, skill]) =>
+    skill === Infinity ? { profession } : { profession, maxSkill: skill },
+  );
+}
+
 export type Scope = RecipeFilter & {
-  /** Other professions whose recipes may make intermediates, at any skill; `trainerOnly` applies. */
-  craftWith?: Profession[];
+  /** Professions whose recipes may make intermediates; `trainerOnly` applies to them too. */
+  craftWith?: Helper[];
   /** Listing hours for deposits; defaults to Auctionator's setting, else 24. */
   listingHours?: ListingHours;
 };
@@ -112,18 +135,13 @@ export class Advisor {
     );
   }
 
-  /** Recipes usable for intermediates: the target profession within skill, plus helpers. */
+  /** Recipes usable for intermediates: those the player knows in each of their professions. */
   private craftingRecipes(scope: Scope): Recipe[] {
-    const own = selectRecipes(this.game.recipes, {
-      profession: scope.profession,
-      ...knownOf(scope),
-    });
-    const helpers = this.game.recipes.filter(
-      (r) =>
-        scope.craftWith?.includes(r.profession) &&
-        !(scope.trainerOnly && r.planItemId !== undefined),
+    const known = [{ profession: scope.profession, ...knownOf(scope) }, ...helpersOf(scope)];
+    const trainerOnly = scope.trainerOnly ? { trainerOnly: true } : {};
+    return known.flatMap((filter) =>
+      selectRecipes(this.game.recipes, { ...filter, ...trainerOnly }),
     );
-    return [...own, ...helpers];
   }
 
   pricer(scope: Scope, held?: ReadonlyMap<number, number>): Pricer {
@@ -242,13 +260,9 @@ function quantities(holdings: Holding[]): Map<number, number> {
   return new Map(holdings.map((h) => [h.itemId, h.quantity]));
 }
 
-/** What limits the player's own recipes: skill, and whether plans are available. */
-function knownOf(scope: Scope): Omit<RecipeFilter, 'profession'> {
-  const filter: Omit<RecipeFilter, 'profession'> = {};
-  if (scope.maxSkill !== undefined) filter.maxSkill = scope.maxSkill;
-  if (scope.minSkill !== undefined) filter.minSkill = scope.minSkill;
-  if (scope.trainerOnly) filter.trainerOnly = true;
-  return filter;
+/** Skill limits what the player knows; `minSkill` only hides rows, so lower recipes still count. */
+function knownOf(scope: Scope): Pick<RecipeFilter, 'maxSkill'> {
+  return scope.maxSkill === undefined ? {} : { maxSkill: scope.maxSkill };
 }
 
 async function openMarket(spec: string, auctionator: AuctionatorData | undefined): Promise<Market> {
@@ -273,5 +287,5 @@ function normalize(name: string): string {
 }
 
 export function isProfession(value: string): value is Profession {
-  return value in PROFESSIONS;
+  return Object.hasOwn(PROFESSIONS, value);
 }

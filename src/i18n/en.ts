@@ -25,7 +25,9 @@ Options:
       --min-profit <money>  e.g. 50s, 1g20s, 2g (default 1s; materials: gain over selling, default 1c)
       --crafts <n>          recipes: buy reagents for this many crafts (default 1)
       --hours <2|8|24>      listing duration for deposits (default: Auctionator's, else 24)
-      --craft-with <name>   another profession that may make intermediates (repeatable)
+      --craft-with <name[:skill]>  another profession you have, at your skill in it,
+                            that may make intermediates, e.g. mining:120 (repeatable;
+                            without a skill, taken to be at least --skill)
   -m, --market <spec>       auctionator[:realm] (default) or ahledger:<market id>
       --have <item:qty>     a material you own, by name or id (repeatable)
       --inventory           use materials from Syndicator's saved inventory
@@ -84,6 +86,8 @@ Options:
   noFullScan: ', no full scan yet',
   auctionatorMarket: (realm) => `${realm} (your Auctionator scans)`,
   header: (profession, skill, market, age) => `${profession} (${skill}) on ${market}${age}`,
+  helper: (profession, skill) => `${profession} (${skill})`,
+  craftingWith: (helpers) => `intermediates also from ${helpers}`,
   stale: (days) => `! prices are ${days} days old; scan the auction house and /reload`,
   summary: (considered, unpriced, bound, minProfit) =>
     `${considered} recipes in range; skipped: ${unpriced} unpriced reagents, ${bound} bind on pickup; min profit ${money(minProfit)}`,

@@ -6,7 +6,7 @@ import {
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import type { Advisor, Scope } from '../advisor.ts';
+import type { Advisor, Helper, Scope } from '../advisor.ts';
 import { referencePrice } from '../engine/classify.ts';
 import type { Holding } from '../engine/materials.ts';
 import type { ListingHours } from '../engine/pricer.ts';
@@ -54,9 +54,24 @@ const maxSkill = z
   .optional()
   .describe('Player skill; hides recipes that need more to learn');
 const craftWith = z
-  .array(z.enum(professionNames))
+  .array(
+    z.union([
+      z.enum(professionNames),
+      z.object({
+        profession: z.enum(professionNames),
+        maxSkill: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe('Player skill in it; recipes that need more to learn are not used'),
+      }),
+    ]),
+  )
   .optional()
-  .describe('Other professions allowed to make intermediates, e.g. mining to smelt bars');
+  .describe(
+    "Other professions the player has, which may make intermediates, e.g. mining to smelt bars. Only recipes learnable at its skill are used, so bars it can't smelt are bought. A name alone takes the main profession's maxSkill (a gathering profession is usually at least as high), or any skill without one; { profession, maxSkill } sets it",
+  );
 const trainerOnly = z
   .boolean()
   .optional()
@@ -72,17 +87,27 @@ function scopeOf(args: {
   profession: Profession;
   maxSkill?: number | undefined;
   minSkill?: number | undefined;
-  craftWith?: Profession[] | undefined;
+  craftWith?:
+    | (Profession | { profession: Profession; maxSkill?: number | undefined })[]
+    | undefined;
   listingHours?: ListingHours | undefined;
   trainerOnly?: boolean | undefined;
 }): Scope {
   const scope: Scope = { profession: args.profession };
   if (args.maxSkill !== undefined) scope.maxSkill = args.maxSkill;
   if (args.minSkill !== undefined) scope.minSkill = args.minSkill;
-  if (args.craftWith?.length) scope.craftWith = args.craftWith;
+  if (args.craftWith?.length) scope.craftWith = args.craftWith.map(helperOf);
   if (args.listingHours !== undefined) scope.listingHours = args.listingHours;
   if (args.trainerOnly) scope.trainerOnly = true;
   return scope;
+}
+
+function helperOf(
+  given: Profession | { profession: Profession; maxSkill?: number | undefined },
+): Helper {
+  if (typeof given === 'string') return { profession: given };
+  const { profession, maxSkill } = given;
+  return maxSkill === undefined ? { profession } : { profession, maxSkill };
 }
 
 /** The payload as data for clients that read it, and as JSON text for those that don't. */
@@ -122,7 +147,7 @@ export function itemPriceJson(
   quantity = 1,
   holdings: Holding[] = [],
 ) {
-  const scope: Scope = { profession: 'blacksmithing', craftWith: ['mining'] };
+  const scope: Scope = { profession: 'blacksmithing', craftWith: [{ profession: 'mining' }] };
   const { pricer, routes } = advisor.obtain(scope, itemId, quantity, holdings);
   const stats = advisor.market.prices.get(itemId);
   const obtained = obtainJson(pricer, { itemId, quantity }, routes, lang, now);

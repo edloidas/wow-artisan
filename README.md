@@ -31,6 +31,9 @@ bun run cli recipes -p blacksmithing -s 150 --trainer-only
 # Same, smelting bars yourself instead of buying them, with the materials listed
 bun run cli recipes -p blacksmithing -s 150 --craft-with mining --details
 
+# With mining at 120: Gold, Steel and Mithril can't be smelted yet, so those bars are bought
+bun run cli recipes -p blacksmithing -s 150 --craft-with mining:120 --details
+
 # Priced for 100 crafts: big buys climb past the cheapest listings
 bun run cli recipes -p mining --crafts 100 --details
 
@@ -47,6 +50,9 @@ bun run cli obtain -p mining "Bronze Bar:100" --have "Copper Ore:60"
 bun run cli markets
 bun run cli recipes -p blacksmithing -m ahledger:forever.normal.alliance.us
 ```
+
+`--craft-with mining` without a skill takes mining to be at least `--skill`, as a
+gathering profession usually is; with no `--skill` either, any recipe counts.
 
 Professions: `blacksmithing`, `mining`. Add `--json` for machine-readable output.
 `bun run cli --help` lists every option.

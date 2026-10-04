@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { parseArgs } from 'node:util';
-import { Advisor, isProfession, type Scope } from './advisor.ts';
+import { Advisor, type Helper, helpersOf, isProfession, type Scope } from './advisor.ts';
 import type { Thresholds } from './engine/classify.ts';
 import { type HeldUse, type Holding, type HoldingSale, heldPerCraft } from './engine/materials.ts';
 import {
@@ -12,7 +12,6 @@ import {
 } from './engine/pricer.ts';
 import type { Category, Evaluation } from './engine/recommend.ts';
 import { loadGameData } from './gamedata/load.ts';
-import type { Profession } from './gamedata/types.ts';
 import {
   type HoldingLine,
   type Lang,
@@ -186,11 +185,20 @@ function parseScope(values: Record<string, unknown>): Scope {
       throw new Error(`Listing hours are 2, 8 or 24, got '${values.hours}'`);
     scope.listingHours = hours;
   }
-  const craftWith = (values['craft-with'] as string[] | undefined) ?? [];
-  const invalid = craftWith.filter((p) => !isProfession(p));
-  if (invalid.length > 0) throw new Error(`Unknown profession: ${invalid.join(', ')}`);
-  if (craftWith.length > 0) scope.craftWith = craftWith as Profession[];
+  const craftWith = ((values['craft-with'] as string[] | undefined) ?? []).map(parseHelper);
+  if (craftWith.length > 0) scope.craftWith = craftWith;
   return scope;
+}
+
+/** `mining` or `mining:120`. */
+function parseHelper(spec: string): Helper {
+  const [profession = '', skill, ...extra] = spec.split(':');
+  if (!isProfession(profession)) throw new Error(`Unknown profession: ${profession}`);
+  if (skill === undefined) return { profession };
+  const maxSkill = Number(skill);
+  if (extra.length > 0 || !Number.isSafeInteger(maxSkill) || maxSkill < 1)
+    throw new Error(`Use profession or profession:skill, got '${spec}'`);
+  return { profession, maxSkill };
 }
 
 function parseHolding(advisor: Advisor, spec: string): Holding {
@@ -230,7 +238,14 @@ function printHeader({ t }: Out, advisor: Advisor, scope: Scope): void {
     market.source === 'auctionator'
       ? t.auctionatorMarket(market.id.slice('auctionator:'.length))
       : market.label;
+  const helpers = helpersOf(scope).map(({ profession, maxSkill }) =>
+    t.helper(
+      t.professions[profession],
+      maxSkill === undefined ? t.anySkill : t.skillAtMost(maxSkill),
+    ),
+  );
   console.log(t.header(t.professions[scope.profession], skill, label, age));
+  if (helpers.length > 0) console.log(t.craftingWith(helpers.join(', ')));
   if (stale && scanAgeDays !== undefined) console.log(t.stale(scanAgeDays));
 }
 

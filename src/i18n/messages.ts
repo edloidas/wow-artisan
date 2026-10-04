@@ -53,6 +53,8 @@ export type Messages = {
   noFullScan: string;
   auctionatorMarket: (realm: string) => string;
   header: (profession: string, skill: string, market: string, age: string) => string;
+  helper: (profession: string, skill: string) => string;
+  craftingWith: (helpers: string) => string;
   stale: (days: number) => string;
   summary: (considered: number, unpriced: number, bound: number, minProfit: number) => string;
   more: (count: number) => string;

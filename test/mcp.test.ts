@@ -3,7 +3,7 @@ import { RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { Advisor } from '../src/advisor.ts';
+import { Advisor, helpersOf, isProfession } from '../src/advisor.ts';
 import type { GameData, ItemInfo, Recipe } from '../src/gamedata/types.ts';
 import type { Inventory } from '../src/inventory/syndicator.ts';
 import { createServer, type itemPriceJson, type ServerDeps, VIEW_URI } from '../src/mcp/server.ts';
@@ -66,7 +66,7 @@ const game: GameData = {
     [BRACERS]: item('Iron Bracers', 300),
   },
   recipes: [
-    recipe(101, 'Smelt Copper', 'mining', BAR, [[ORE, 2]], 1),
+    recipe(101, 'Smelt Copper', 'mining', BAR, [[ORE, 2]], 30),
     recipe(201, 'Copper Sword', 'blacksmithing', SWORD, [[BAR, 4]], 20),
     recipe(202, 'Mining Pick', 'blacksmithing', PICK, [[BAR, 3]], 40, PLAN),
     recipe(203, 'Iron Chain', 'blacksmithing', CHAIN, [[BAR, 1]], 10),
@@ -330,6 +330,95 @@ describe('recommend_crafts', () => {
     expect(sword.depositEstimate).toBe(5);
   });
 
+  test('a helper profession smelts only what its skill has learned, and the rest is bought', async () => {
+    const c = await connect();
+    const sword = async (maxSkill: number) =>
+      row(
+        (
+          await payload(c, 'recommend_crafts', {
+            profession: 'blacksmithing',
+            craftWith: [{ profession: 'mining', maxSkill }],
+          })
+        ).groups.steady,
+        201,
+      ).materials[0];
+    expect(await sword(29)).toMatchObject({ itemId: BAR, source: 'auction' });
+    expect(await sword(30)).toMatchObject({ itemId: BAR, source: 'craft', unitCost: 40 });
+  });
+
+  test('a helper without a skill is taken to be at least the main profession', async () => {
+    const c = await connect();
+    const bar = async (maxSkill: number, helper: unknown = 'mining') =>
+      row(
+        (
+          await payload(c, 'recommend_crafts', {
+            profession: 'blacksmithing',
+            maxSkill,
+            craftWith: [helper],
+          })
+        ).groups.steady,
+        201,
+      ).materials[0]?.source;
+    expect(await bar(29)).toBe('auction');
+    expect(await bar(30)).toBe('craft');
+    expect(await bar(29, { profession: 'mining', maxSkill: 30 })).toBe('craft');
+  });
+
+  test('a helper skill gates its recipes, and trainerOnly drops its plan recipes', () => {
+    const plan = { ...recipe(102, 'Smelt Copper', 'mining', BAR, [[ORE, 2]], 1), planItemId: PLAN };
+    const smelts = game.recipes.map((r) => (r.spellId === 101 ? plan : r));
+    const advisor = Advisor.fromData({ game: { ...game, recipes: smelts }, market });
+    const barSource = (scope: Parameters<Advisor['recommend']>[0]) =>
+      advisor.recommend(scope).result.groups.steady.find((e) => e.recipe.spellId === 201)?.parts[0]
+        ?.quote.source;
+    const mining = { profession: 'mining' as const, maxSkill: 1 };
+    expect(barSource({ profession: 'blacksmithing', craftWith: [mining] })).toBe('craft');
+    expect(
+      barSource({ profession: 'blacksmithing', craftWith: [{ ...mining, maxSkill: 0 }] }),
+    ).toBe('auction');
+    expect(barSource({ profession: 'blacksmithing', craftWith: [mining], trainerOnly: true })).toBe(
+      'auction',
+    );
+  });
+
+  test('a helper given twice counts once, at its highest skill', () => {
+    const scope = { profession: 'blacksmithing' as const, maxSkill: 40 };
+    expect(
+      helpersOf({
+        ...scope,
+        craftWith: [{ profession: 'mining', maxSkill: 50 }, { profession: 'mining' }],
+      }),
+    ).toEqual([{ profession: 'mining', maxSkill: 50 }]);
+    expect(
+      helpersOf({
+        profession: 'blacksmithing',
+        craftWith: [{ profession: 'mining', maxSkill: 50 }, { profession: 'mining' }],
+      }),
+    ).toEqual([{ profession: 'mining' }]);
+  });
+
+  test('only real professions are professions, not inherited object keys', () => {
+    expect(isProfession('mining')).toBe(true);
+    expect(isProfession('toString')).toBe(false);
+    expect(isProfession('constructor')).toBe(false);
+  });
+
+  test('minSkill hides rows but keeps lower recipes for intermediates', () => {
+    const press = recipe(205, 'Bar Press', 'blacksmithing', BAR, [[ORE, 2]], 5);
+    const advisor = Advisor.fromData({
+      game: { ...game, recipes: [...game.recipes, press] },
+      market,
+    });
+    const { result } = advisor.recommend({ profession: 'blacksmithing', minSkill: 10 });
+    const sword = result.groups.steady.find((e) => e.recipe.spellId === 201);
+    expect(sword?.parts[0]?.quote).toMatchObject({ source: 'craft', recipe: press });
+    expect(
+      Object.values(result.groups)
+        .flat()
+        .map((e) => e.recipe.spellId),
+    ).not.toContain(205);
+  });
+
   test('old scans add a top-level warning', async () => {
     const data = await payload(await connect({ now: () => STALE }), 'recommend_crafts', {
       profession: 'blacksmithing',
@@ -400,6 +489,15 @@ describe('evaluate_materials', () => {
       gain: 8265,
       consumes: [expect.objectContaining({ itemId: ORE, perCraft: 8, total: 40 })],
     });
+  });
+
+  test('a holding the player lacks the skill to process has no use', async () => {
+    const data = await payload(await connect(), 'evaluate_materials', {
+      profession: 'blacksmithing',
+      craftWith: [{ profession: 'mining', maxSkill: 29 }],
+      items: [{ item: 'copper ore', quantity: 40 }],
+    });
+    expect(Object.values(data.groups).flatMap((g) => g.top)).toEqual([]);
   });
 
   test('reads the saved inventory, keeping only materials in scope', async () => {
