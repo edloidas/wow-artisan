@@ -362,6 +362,12 @@ function quoteText(out: Out, pricer: Pricer, quote: CostQuote): string {
     return t.crafted(pricer.recipeName(quote.recipe, out.lang));
   if (quote.source === 'held' && quote.rest)
     return t.heldPart(Math.round(quote.held ?? 0), quoteText(out, pricer, quote.rest));
+  if (quote.source === 'auction' && quote.rest) {
+    const { rest, ...listings } = quote;
+    const bought = quote.bought ?? 0;
+    const auction = quoteText(out, pricer, { ...listings, units: bought });
+    return t.boughtPart(bought, auction, quoteText(out, pricer, rest));
+  }
   if (
     quote.source === 'auction' &&
     quote.cheapest !== undefined &&
@@ -404,7 +410,7 @@ function printRoutes(out: Out, pricer: Pricer, wanted: Holding, routes: CostQuot
     const unit = t.money(route.unit).padStart(11);
     const total = t.money((route.unit ?? 0) * wanted.quantity).padStart(12);
     console.log(`${label}${unit}${total}${i === 0 ? `  ${t.cheapestRoute}` : ''}`);
-    const parts = route.source === 'held' ? route.rest : route;
+    const parts = route.rest ?? route;
     if (parts?.source === 'craft' && parts.recipe) {
       const crafts = parts.crafts ?? parts.units / parts.recipe.output.count;
       console.log(`    ${partsText(out, pricer, parts.parts, crafts)}`);

@@ -92,6 +92,7 @@ Options:
   crafted: (recipe) => `craft: ${recipe}`,
   auctionFrom: (cheapest, listed) => `auction, from ${cheapest}, ${listed} listed`,
   heldPart: (held, rest) => `${held} held + ${rest}`,
+  boughtPart: (units, auction, rest) => `${units} by ${auction} + ${rest}`,
   spare: (units) => `${units} extra made, counted at what they sell for, up to what they cost`,
   batch: (crafts) => `reagents bought for ${crafts} crafts`,
   obtainTitle: (item, quantity) => `${item} x${quantity}`,

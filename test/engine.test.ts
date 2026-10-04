@@ -535,7 +535,7 @@ describe('batches', () => {
     ]);
   });
 
-  test('two branches drawing on one holding shrink the batch until it covers both', () => {
+  describe('one item in two branches of a craft', () => {
     const ALLOY = 30;
     const alloy = recipe(
       401,
@@ -549,33 +549,57 @@ describe('batches', () => {
       1,
     );
     const smeltBar = game.recipes.find((r) => r.name === 'Smelt Bar') as Recipe;
-    // Bars climb from 13c to 19c by the 5th of 10: one is bought under the 14.25c that held
-    // ore nets, but a batch of them smelts held ore, which the direct ore branch also uses.
-    const alloyPrices = new Map<number, PriceStats>([
-      [ORE, { min: 15, median: 20, quantity: 100 }],
-      [BAR, { min: 13, median: 19, quantity: 10 }],
-      [ALLOY, { min: 1000, median: 1000, quantity: 50 }],
-    ]);
-    const withOre = (ore: number) =>
+    // No bars listed, so every bar is smelted from ore the direct ore branch also needs.
+    const alloyPricer = (held?: Map<number, number>) =>
       new Pricer({
         game: { ...game, items: { ...game.items, [ALLOY]: item('Alloy', 1) } },
-        market: { ...market, prices: alloyPrices },
+        market: {
+          ...market,
+          prices: new Map<number, PriceStats>([
+            [ORE, { min: 15, median: 20, quantity: 100 }],
+            [ALLOY, { min: 1000, median: 1000, quantity: 50 }],
+          ]),
+        },
         vendorBuy: new Map(),
         thresholds: DEFAULT_THRESHOLDS,
         recipes: [smeltBar, alloy],
-        held: new Map([[ORE, ore]]),
+        ...(held ? { held } : {}),
       });
-    const single = recommend(withOre(Infinity), [alloy], 1);
-    expect(single.groups.steady[0]?.parts[0]?.quote.source).toBe('auction');
-    const [use] = heldUses(withOre(10), single, [{ itemId: ORE, quantity: 10 }], 1).steady;
-    // The first pass covers 10 crafts with 1 ore each; smelting needs 2, so 5
-    expect(use).toMatchObject({ batch: 5, crafts: 5 });
-    expect([...(use?.consumes ?? [])]).toEqual([[ORE, 2]]);
+
+    test('draw on the holding once', () => {
+      // 10 alloys need 20 ore: the bars take the 10 held, the direct ore is bought
+      const quote = alloyPricer(new Map([[ORE, 10]])).craftCost(alloy, [], 10);
+      expect([...heldPerCraft(quote.parts ?? [], 10)]).toEqual([[ORE, 10]]);
+    });
+
+    test('buy along one climb, and say when together they need more than is listed', () => {
+      // 60 alloys: 60 ore smelted for bars, then 60 more ore from where those left off
+      const quote = alloyPricer().craftCost(alloy, [], 60);
+      const [, direct] = quote.parts ?? [];
+      // 15 + 5 * 60/100 for the first 60; the next 40 to the 20c middle and 20 past it at 25c
+      expect(direct?.quote).toMatchObject({ source: 'auction', after: 60, short: true });
+      expect(direct?.quote.unit).toBeCloseTo((100 * 20 - 60 * 18 + 20 * 25) / 60, 9);
+      expect(shortfalls(ALLOY, quote)).toEqual([{ itemId: ORE, need: 120, listed: 100 }]);
+    });
+  });
+
+  test('cheap listings are bought up to where another route is cheaper', () => {
+    // Bars climb from 10c to 14c by the 10th of 20; smelted from ore they cost 12c. A bar costs
+    // under 12c until the 5th, so 5 are bought and 95 smelted.
+    const p = batchPricer(undefined, [
+      [ORE, { min: 12, median: 12, quantity: 100_000 }],
+      [BAR, { min: 10, median: 14, quantity: 20 }],
+    ]);
+    const quote = p.cost(BAR, [], 100);
+    expect(quote).toMatchObject({ source: 'auction', bought: 5 });
+    expect(quote.rest).toMatchObject({ source: 'craft', units: 95, unit: 12 });
+    // the first 5 average 10 + 4 * 5/20 = 11
+    expect(quote.unit).toBeCloseTo((5 * 11 + 95 * 12) / 100, 9);
   });
 
   test('a holding only worth using at scale is still found', () => {
     // Bars climb from 13c to 16c at the 50th of 100: one craft buys 4 under the 14.25c held ore
-    // nets, but 25 crafts would climb past it, so they smelt the held ore instead
+    // nets. A batch buys only the bars under what smelting costs and smelts the rest.
     const ore: Holding[] = [{ itemId: ORE, quantity: 100 }];
     const p = batchPricer(new Map([[ORE, 100]]), [
       [ORE, { min: 15, median: 15, quantity: 1000 }],
@@ -583,8 +607,11 @@ describe('batches', () => {
     ]);
     expect(recommend(p, [sword], 1).groups.steady[0]?.parts[0]?.quote.source).toBe('auction');
     const [use] = heldUses(p, heldCandidates(p, [sword]), ore, 1).steady;
-    expect(use).toMatchObject({ batch: 25, crafts: 25 });
-    expect([...(use?.consumes ?? [])]).toEqual([[ORE, 4]]);
+    // 31 swords take 124 bars. Smelting them all averages 14.40c (100 held at 14.25c, 24 bought
+    // at 15c), so the 23 bars under that are bought and 101 smelted: all 100 held ore and 1 more.
+    expect(use).toMatchObject({ batch: 31, crafts: 31 });
+    expect(use?.parts[0]?.quote).toMatchObject({ source: 'auction', bought: 23 });
+    expect((use?.consumes.get(ORE) ?? 0) * 31).toBeCloseTo(100, 9);
   });
 
   test('a batch grows to every craft the holdings cover when intermediates come in pairs', () => {

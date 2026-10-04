@@ -68,6 +68,8 @@ function addHeld(itemId: number, units: number, quote: CostQuote, into: Map<numb
     const share = quote.rest ? (quote.held ?? 0) / quote.units : 1;
     into.set(itemId, (into.get(itemId) ?? 0) + units * share);
     if (quote.rest) addHeld(itemId, units * (1 - share), quote.rest, into);
+  } else if (quote.source === 'auction' && quote.rest) {
+    addHeld(itemId, (units * quote.rest.units) / quote.units, quote.rest, into);
   } else if (quote.source === 'craft' && quote.recipe) {
     // Whole crafts: units made beyond the need use holdings too.
     const crafts = quote.crafts ?? quote.units / quote.recipe.output.count;

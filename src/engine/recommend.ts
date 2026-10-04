@@ -6,7 +6,14 @@ import {
   supplyProblem,
   worstStatus,
 } from './classify.ts';
-import { AUCTION_CUT, auctionParts, type Part, type Pricer, type SaleQuote } from './pricer.ts';
+import {
+  AUCTION_CUT,
+  auctionNeed,
+  auctionParts,
+  type Part,
+  type Pricer,
+  type SaleQuote,
+} from './pricer.ts';
 
 /**
  * Where a recipe's product goes and how healthy the markets it depends on are. `vendor` sells
@@ -105,7 +112,7 @@ export function evaluateRecipe(pricer: Pricer, recipe: Recipe, batch = 1): Evalu
     const problems: (MarketIssue | undefined)[] = stats
       ? [
           availabilityProblem(stats, pricer.ctx.thresholds, pricer.ctx.market.latestScan),
-          supplyProblem(part.quote.units, stats.quantity),
+          supplyProblem(auctionNeed(part.quote), stats.quantity),
         ]
       : [{ kind: 'nothing-listed' }];
     for (const issue of problems) {

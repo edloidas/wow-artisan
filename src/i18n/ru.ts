@@ -105,6 +105,7 @@ export const ru: Messages = {
   crafted: (recipe) => `крафт: ${recipe}`,
   auctionFrom: (cheapest, listed) => `аукцион, от ${cheapest}, на АХ ${listed}`,
   heldPart: (held, rest) => `своих ${held} + ${rest}`,
+  boughtPart: (units, auction, rest) => `${units} шт.: ${auction} + ${rest}`,
   spare: (units) => `лишних ${units} шт., по цене их продажи, но не дороже их себестоимости`,
   batch: (crafts) => `реагенты покупаются на ${crafts} крафтов`,
   obtainTitle: (item, quantity) => `${item} x${quantity}`,

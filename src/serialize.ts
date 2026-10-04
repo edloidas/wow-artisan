@@ -29,8 +29,9 @@ export type MaterialLine = {
   /** Auction: the cheapest listing the price climbs from, and the units listed. */
   cheapestUnit?: number;
   listed?: number;
-  /** Units taken from the holdings, and how the rest is got when they fall short. */
+  /** Units taken from the holdings, or bought at auction, and how the rest is got. */
   held?: number;
+  auctionUnits?: number;
   restSource?: CostQuote['source'];
 };
 
@@ -84,6 +85,7 @@ export function partsJson(pricer: Pricer, parts: Part[], lang: Lang = 'en'): Mat
     if (quote.cheapest !== undefined) line.cheapestUnit = Math.round(quote.cheapest);
     if (quote.listed !== undefined) line.listed = quote.listed;
     if (quote.held !== undefined) line.held = quote.held;
+    if (quote.bought !== undefined) line.auctionUnits = quote.bought;
     if (quote.rest) line.restSource = quote.rest.source;
     return line;
   });
@@ -184,6 +186,7 @@ type RouteJson = {
   cheapestUnit: number | undefined;
   listed: number | undefined;
   held: number | undefined;
+  auctionUnits: number | undefined;
   rest: RouteJson | undefined;
   materials: MaterialLine[] | undefined;
 };
@@ -207,6 +210,7 @@ export function obtainJson(
     cheapestUnit: copper(quote.cheapest),
     listed: quote.listed,
     held: quote.held,
+    auctionUnits: quote.bought,
     rest: quote.rest && route(quote.rest),
     materials: quote.parts && partsJson(pricer, quote.parts, lang),
   });
@@ -232,7 +236,7 @@ export function obtainJson(
     notes: [
       'Routes the market can fully supply come first, then cheapest first; a route with reasons needs more units than are listed, priced by a guess and maybe not for sale today. unitCost is copper per unit averaged over quantity, total over all of it; materials[].count is per craft of the route recipe, and crafts are whole, with surplus units credited at what they sell for, up to what they cost to make.',
       LADDER_NOTE,
-      'held units cost what selling them nets; rest is how the units beyond the holdings are got.',
+      'held units cost what selling them nets. auctionUnits are bought from the listings cheaper than the next-best route. rest is how the units beyond the holdings or those listings are got.',
     ],
   };
 }

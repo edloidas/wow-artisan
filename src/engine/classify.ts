@@ -73,18 +73,19 @@ export type AuctionBuy = {
 };
 
 /**
- * What buying `units` costs per unit, averaged. Scans keep no price ladder, only the cheapest
- * listing and the units on offer, so the ladder is modelled: prices climb linearly from the
- * cheapest listing to the listing median (AHledger) at the middle unit, or to the usual price
- * and at least `MIN_LADDER_RISE` above the cheapest when no median is known. Units beyond what
- * is listed cost the top of the ladder. A cheapest listing far under the usual price is likely
- * a lone unit, so the ladder starts at the usual price instead.
+ * The modelled price ladder. Scans keep no ladder, only the cheapest listing and the units on
+ * offer, so prices are taken to climb linearly from the cheapest listing to the listing median
+ * (AHledger) at the middle unit, or to the usual price and at least `MIN_LADDER_RISE` above the
+ * cheapest when no median is known. Units beyond what is listed cost the top of the ladder. A
+ * cheapest listing far under the usual price is likely a lone unit, so the ladder starts at the
+ * usual price instead.
  */
-export function buyPrice(
+export type Ladder = { start: number; middle: number; listed: number };
+
+export function ladder(
   stats: PriceStats | undefined,
-  units = 1,
   maxSpread = DEFAULT_THRESHOLDS.maxSpread,
-): AuctionBuy | undefined {
+): Ladder | undefined {
   if (!stats || stats.quantity <= 0) return undefined;
   const reference = referencePrice(stats);
   const outlier =
@@ -97,12 +98,34 @@ export function buyPrice(
     stats.median !== undefined
       ? Math.max(stats.median, start)
       : Math.max(reference ?? start, start * (1 + MIN_LADDER_RISE));
-  const listed = stats.quantity;
-  if (units <= listed) {
-    return { unit: start + ((middle - start) * units) / listed, cheapest: start, listed };
-  }
-  const top = 2 * middle - start;
-  return { unit: (listed * middle + (units - listed) * top) / units, cheapest: start, listed };
+  return { start, middle, listed: stats.quantity };
+}
+
+/** Copper for the first `units` units on the ladder. */
+function ladderTotal({ start, middle, listed }: Ladder, units: number): number {
+  const rise = middle - start;
+  if (units <= listed) return start * units + (rise * units * units) / listed;
+  return start * listed + rise * listed + (units - listed) * (2 * middle - start);
+}
+
+/** How many units, counted from the cheapest, cost less each than `price`; at most `listed`. */
+export function unitsUnder({ start, middle, listed }: Ladder, price: number): number {
+  if (price <= start) return 0;
+  if (middle === start) return listed;
+  return Math.min(listed, ((price - start) * listed) / (2 * (middle - start)));
+}
+
+/** What buying `units` costs per unit, averaged, after `after` units were already bought. */
+export function buyPrice(
+  stats: PriceStats | undefined,
+  units = 1,
+  maxSpread = DEFAULT_THRESHOLDS.maxSpread,
+  after = 0,
+): AuctionBuy | undefined {
+  const steps = ladder(stats, maxSpread);
+  if (!steps) return undefined;
+  const unit = (ladderTotal(steps, after + units) - ladderTotal(steps, after)) / units;
+  return { unit, cheapest: steps.start, listed: steps.listed };
 }
 
 /** What a new listing can ask: no more than the cheapest competitor or the usual price. */

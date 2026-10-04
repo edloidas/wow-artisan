@@ -156,7 +156,9 @@ function rowDetail(row: Row): HTMLElement {
           money(m.unitCost),
           ` each, ${m.source}`,
           m.craftedWith ? ` (${m.craftedWith})` : '',
-          m.restSource ? ` (${Math.round(m.held ?? 0)} held, the rest ${m.restSource})` : '',
+          m.restSource
+            ? ` (${Math.round(m.held ?? m.auctionUnits ?? 0)} ${m.held === undefined ? 'bought' : 'held'}, the rest ${m.restSource})`
+            : '',
           ...(m.cheapestUnit !== undefined &&
           m.unitCost !== undefined &&
           m.unitCost > m.cheapestUnit

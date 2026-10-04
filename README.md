@@ -123,10 +123,16 @@ render the view; the answer is the same either way.
   it can't, whatever the price: past what is listed the price is a guess, and
   on AHledger those units are not for sale today. A cheapest listing far under
   the usual price is assumed to be a single unit and is ignored, so the climb
-  starts at the usual price. Crafts are whole: 3 bronze bars take 2 smelts, and
-  the spare bar counts at what it sells for, up to what it cost to make. Merchant prices are those
-  Auctionator cached when you visited one, plus fluxes, coal, coarse thread and
-  green dye from trade-supply merchants.
+  starts at the usual price. Cheap listings can top up another route: a batch
+  buys the units that cost less than the next-best route, then gets the rest
+  from that route: the copper bars listed under what smelting costs are bought,
+  and the rest smelted.
+  An item a recipe needs twice, directly and through an intermediate, is bought
+  along one climb and drawn from your materials once. Crafts are whole: 3 bronze
+  bars take 2 smelts, and the spare bar counts at what it sells for, up to what
+  it cost to make. Merchant prices are those Auctionator cached when you visited
+  one, plus fluxes, coal, coarse thread and green dye from trade-supply
+  merchants.
 - **List at** is the asking price to type into the auction house: the lower of
   the cheapest listing and the usual price. A sale nets it minus the 5% cut.
   **Vendor** is what a merchant pays. The product goes the way that nets more; on
@@ -178,9 +184,9 @@ render the view; the answer is the same either way.
   buying it, a merchant, or each recipe that makes it. Your materials are used
   first at what selling them nets, and what they don't cover is bought or
   crafted, so 60 copper ore toward 100 bronze bars smelts the 60 and buys the
-  rest at the batch price. Each step of a route is chosen on its own, so the
-  winner can buy copper bars, smelt tin from ore and buy no bronze, or buy the
-  bronze outright. A route that needs more than is listed says so.
+  rest at the batch price. Each reagent picks its own source, so the winner can
+  buy copper bars, smelt tin from ore and buy no bronze, or buy the bronze
+  outright. A route that needs more than is listed says so.
 
 ## Caveats
 

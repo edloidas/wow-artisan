@@ -62,6 +62,8 @@ export type Messages = {
   auctionFrom: (cheapest: string, listed: number) => string;
   /** Held units, with how the rest is got. */
   heldPart: (held: number, rest: string) => string;
+  /** Units bought from the cheap listings, with how the rest is got. */
+  boughtPart: (units: number, auction: string, rest: string) => string;
   /** Units a route makes beyond the need, credited at what they sell for, up to their cost. */
   spare: (units: string) => string;
   batch: (crafts: number) => string;
