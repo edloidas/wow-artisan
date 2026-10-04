@@ -1,6 +1,13 @@
 export const PROFESSIONS = {
+  alchemy: 171,
   blacksmithing: 164,
+  cooking: 185,
+  enchanting: 333,
+  engineering: 202,
+  'first-aid': 129,
+  leatherworking: 165,
   mining: 186,
+  tailoring: 197,
 } as const;
 
 export type Profession = keyof typeof PROFESSIONS;

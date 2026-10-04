@@ -19,7 +19,7 @@ const ACQUIRE_ON_SKILL_LEARN = '1';
 const MAX_REAGENTS = 8;
 const BONDING_ON_PICKUP = '1';
 /** Bump when the cached shape changes. */
-const CACHE_FILE = 'gamedata-v5.json';
+const CACHE_FILE = 'gamedata-v6.json';
 /** Most common gap between learn skill and yellow among recipes that come from plans. */
 const ESTIMATED_LEARN_OFFSET = 20;
 

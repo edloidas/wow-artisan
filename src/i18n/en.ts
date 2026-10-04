@@ -15,7 +15,8 @@ Usage:
   wow-artisan markets
   wow-artisan sync      [--build <version>]
 
-Professions: blacksmithing, mining
+Professions: alchemy, blacksmithing, cooking, enchanting, engineering, first-aid,
+             leatherworking, mining, tailoring
 
 Options:
   -p, --profession <name>   profession to advise on
@@ -25,7 +26,7 @@ Options:
       --min-profit <money>  e.g. 50s, 1g20s, 2g (default 1s; materials: gain over selling, default 1c)
       --crafts <n>          recipes: buy reagents for this many crafts (default 1)
       --hours <2|8|24>      listing duration for deposits (default: Auctionator's, else 24)
-      --craft-with <name[:skill]>  another profession you have, at your skill in it,
+      --craft-with <name[:skill]>  another profession you or a friend has, at that skill,
                             that may make intermediates, e.g. mining:120 (repeatable;
                             without a skill, taken to be at least --skill)
   -m, --market <spec>       auctionator[:realm] (default) or ahledger:<market id>
@@ -40,7 +41,17 @@ Options:
       --swing <ratio>       max high/low price ratio (default 3)
       --trend <share>       max 7d vs 30d median drift (default 0.4)
 `,
-  professions: { blacksmithing: 'blacksmithing', mining: 'mining' },
+  professions: {
+    alchemy: 'alchemy',
+    blacksmithing: 'blacksmithing',
+    cooking: 'cooking',
+    enchanting: 'enchanting',
+    engineering: 'engineering',
+    'first-aid': 'first aid',
+    leatherworking: 'leatherworking',
+    mining: 'mining',
+    tailoring: 'tailoring',
+  },
   categories: {
     steady: 'Steady: enough units, stable asking prices',
     vendor: 'Vendor: sell to a merchant, no auction risk or deposit',

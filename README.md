@@ -34,6 +34,9 @@ bun run cli recipes -p blacksmithing -s 150 --craft-with mining --details
 # With mining at 120: Gold, Steel and Mithril can't be smelted yet, so those bars are bought
 bun run cli recipes -p blacksmithing -s 150 --craft-with mining:120 --details
 
+# A friend with tailoring 250 weaves the bolts; repeat --craft-with for as many as you like
+bun run cli recipes -p leatherworking -s 200 --craft-with tailoring:250 --craft-with mining
+
 # Priced for 100 crafts: big buys climb past the cheapest listings
 bun run cli recipes -p mining --crafts 100 --details
 
@@ -51,10 +54,14 @@ bun run cli markets
 bun run cli recipes -p blacksmithing -m ahledger:forever.normal.alliance.us
 ```
 
-`--craft-with mining` without a skill takes mining to be at least `--skill`, as a
-gathering profession usually is; with no `--skill` either, any recipe counts.
+`--craft-with` names a profession you or a friend has, as many times as needed; the
+same profession given twice counts at the higher skill. Without a skill it is taken
+to be at least `--skill`, as a gathering profession usually is; with no `--skill`
+either, any recipe counts.
 
-Professions: `blacksmithing`, `mining`. Add `--json` for machine-readable output.
+Professions: `alchemy`, `blacksmithing`, `cooking`, `enchanting`, `engineering`,
+`first-aid`, `leatherworking`, `mining`, `tailoring`. Enchanting covers what it makes
+as items (rods, oils, wands, essences); enchants on gear have no item to price. Add `--json` for machine-readable output.
 `bun run cli --help` lists every option.
 
 `--lang ru` (or `WOW_ARTISAN_LANG=ru`) prints the output in Russian, with item

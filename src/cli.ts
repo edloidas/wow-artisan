@@ -12,6 +12,7 @@ import {
 } from './engine/pricer.ts';
 import type { Category, Evaluation } from './engine/recommend.ts';
 import { loadGameData } from './gamedata/load.ts';
+import { PROFESSIONS } from './gamedata/types.ts';
 import {
   type HoldingLine,
   type Lang,
@@ -174,7 +175,7 @@ async function main(): Promise<void> {
 function parseScope(values: Record<string, unknown>): Scope {
   const profession = String(values.profession ?? '');
   if (!isProfession(profession))
-    throw new Error(`Pick a profession with -p: blacksmithing or mining`);
+    throw new Error(`Pick a profession with -p: ${Object.keys(PROFESSIONS).join(', ')}`);
   const scope: Scope = { profession };
   if (values.skill !== undefined) scope.maxSkill = Number(values.skill);
   if (values['min-skill'] !== undefined) scope.minSkill = Number(values['min-skill']);

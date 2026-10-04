@@ -18,6 +18,7 @@ const PICK = 4;
 const PLAN = 5;
 const CHAIN = 6;
 const BRACERS = 7;
+const TUBE = 8;
 
 function item(name: string, sellPrice: number): ItemInfo {
   return {
@@ -64,6 +65,7 @@ const game: GameData = {
     [PLAN]: item('Plans: Mining Pick', 0),
     [CHAIN]: item('Iron Chain', 500),
     [BRACERS]: item('Iron Bracers', 300),
+    [TUBE]: item('Bronze Tube', 30),
   },
   recipes: [
     recipe(101, 'Smelt Copper', 'mining', BAR, [[ORE, 2]], 30),
@@ -71,6 +73,7 @@ const game: GameData = {
     recipe(202, 'Mining Pick', 'blacksmithing', PICK, [[BAR, 3]], 40, PLAN),
     recipe(203, 'Iron Chain', 'blacksmithing', CHAIN, [[BAR, 1]], 10),
     recipe(204, 'Iron Bracers', 'blacksmithing', BRACERS, [[BAR, 1]], 15),
+    recipe(301, 'Bronze Tube', 'engineering', TUBE, [[BAR, 2]], 50),
   ],
   localNames: { ru: { items: { [ORE]: 'Медная руда' }, recipes: { 201: 'Медный меч' } } },
 };
@@ -451,7 +454,7 @@ describe('recommend_crafts', () => {
         await call(c, 'recommend_crafts', { profession: 'blacksmithing', listingHours: 5 }),
       ),
     ).toContain('listingHours');
-    expect(errorText(await call(c, 'recommend_crafts', { profession: 'alchemy' }))).toContain(
+    expect(errorText(await call(c, 'recommend_crafts', { profession: 'herbalism' }))).toContain(
       'profession',
     );
   });
@@ -559,6 +562,11 @@ describe('item_price', () => {
     expect(craft?.materials).toEqual([
       expect.objectContaining({ itemId: ORE, batchUnits: 100, held: 40, restSource: 'auction' }),
     ]);
+  });
+
+  test('crafts with any profession, not only blacksmithing and mining', async () => {
+    const data = await payload(await connect(), 'item_price', { item: 'Bronze Tube' });
+    expect(data.toObtain[0]).toMatchObject({ source: 'craft', recipe: 'Bronze Tube', total: 80 });
   });
 
   test('fromInventory without a saved inventory is a tool error, not an empty holding', async () => {

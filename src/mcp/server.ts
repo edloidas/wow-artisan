@@ -70,7 +70,7 @@ const craftWith = z
   )
   .optional()
   .describe(
-    "Other professions the player has, which may make intermediates, e.g. mining to smelt bars. Only recipes learnable at its skill are used, so bars it can't smelt are bought. A name alone takes the main profession's maxSkill (a gathering profession is usually at least as high), or any skill without one; { profession, maxSkill } sets it",
+    "Other professions the player or their friends have, any number of them, which may make intermediates, e.g. mining to smelt bars or tailoring to weave bolts. Only recipes learnable at its skill are used, so bars it can't smelt are bought. A name alone takes the main profession's maxSkill (a gathering profession is usually at least as high), or any skill without one; { profession, maxSkill } sets it",
   );
 const trainerOnly = z
   .boolean()
@@ -147,7 +147,10 @@ export function itemPriceJson(
   quantity = 1,
   holdings: Holding[] = [],
 ) {
-  const scope: Scope = { profession: 'blacksmithing', craftWith: [{ profession: 'mining' }] };
+  const scope: Scope = {
+    profession: 'blacksmithing',
+    craftWith: professionNames.map((profession) => ({ profession })),
+  };
   const { pricer, routes } = advisor.obtain(scope, itemId, quantity, holdings);
   const stats = advisor.market.prices.get(itemId);
   const obtained = obtainJson(pricer, { itemId, quantity }, routes, lang, now);
@@ -291,7 +294,7 @@ export function createServer(deps: ServerDeps): McpServer {
     {
       title: 'Item price and market health',
       description:
-        'Market stats for one item: cheapest listing, usual price, listed quantity, history, market status, the auction price to list it at, what that nets, and what a merchant pays. toObtain lists every way to get quantity of it, cheapest first: buying on the auction house (averaged over the batch, climbing from the cheapest listing as it takes a larger share of the market), a merchant, or smelting and crafting with blacksmithing and mining, using the given holdings first. Every amount, stats included, is copper per unit: 10000 = 1g, 100 = 1s.',
+        'Market stats for one item: cheapest listing, usual price, listed quantity, history, market status, the auction price to list it at, what that nets, and what a merchant pays. toObtain lists every way to get quantity of it, cheapest first: buying on the auction house (averaged over the batch, climbing from the cheapest listing as it takes a larger share of the market), a merchant, or crafting with any profession at any skill, using the given holdings first. Every amount, stats included, is copper per unit: 10000 = 1g, 100 = 1s.',
       inputSchema: {
         item: z.string().describe('Item name or id'),
         quantity: z
