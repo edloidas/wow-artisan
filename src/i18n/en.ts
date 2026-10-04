@@ -11,6 +11,7 @@ export const en: Messages = {
 Usage:
   wow-artisan recipes   -p <profession> [-s <skill>] [--min-profit 50s] [options]
   wow-artisan materials -p <profession> (--have "Copper Bar:200" ... | --inventory) [--min-profit 10s] [options]
+  wow-artisan obtain    -p <profession> "Bronze Bar:100" [--have "Copper Ore:40" ... | --inventory] [options]
   wow-artisan markets
   wow-artisan sync      [--build <version>]
 
@@ -22,6 +23,7 @@ Options:
       --min-skill <n>       hide recipes learnable below this skill
       --trainer-only        hide recipes taught by plans, keep trainer recipes
       --min-profit <money>  e.g. 50s, 1g20s, 2g (default 1s; materials: gain over selling, default 1c)
+      --crafts <n>          recipes: buy reagents for this many crafts (default 1)
       --hours <2|8|24>      listing duration for deposits (default: Auctionator's, else 24)
       --craft-with <name>   another profession that may make intermediates (repeatable)
   -m, --market <spec>       auctionator[:realm] (default) or ahledger:<market id>
@@ -68,6 +70,9 @@ Options:
     gain: 'gain',
     crafts: 'crafts',
     totalGain: 'total gain',
+    route: 'route',
+    unitCost: 'cost/u',
+    total: 'total',
   },
   plan: 'plan',
   anySkill: 'any skill',
@@ -85,6 +90,18 @@ Options:
   more: (count) => `... ${count} more`,
   risk: 'risk',
   crafted: (recipe) => `craft: ${recipe}`,
+  auctionFrom: (cheapest, listed) => `auction, from ${cheapest}, ${listed} listed`,
+  heldPart: (held, rest) => `${held} held + ${rest}`,
+  spare: (units) => `${units} extra made, counted at what they sell for, up to what they cost`,
+  batch: (crafts) => `reagents bought for ${crafts} crafts`,
+  obtainTitle: (item, quantity) => `${item} x${quantity}`,
+  cheapestRoute: '<- cheapest',
+  noRoute: 'Nothing in scope can supply it: no listing, merchant or recipe.',
+  obtainNotes: [
+    'cost/u is averaged over every unit. Bought units climb from the cheapest listing as the batch takes a larger share of the market; past what is listed they cost the top of that climb.',
+    'Routes the market can fully supply come first, whatever the price: units past what is listed are a guess, and may not be for sale today.',
+    'held units cost what selling them nets, so a route that uses them competes with selling them.',
+  ],
   uses: (list) => `uses ${list}`,
   noGainfulRecipe: (minProfit) =>
     `No recipe in scope earns ${money(minProfit)} or more above selling them.`,
@@ -101,6 +118,7 @@ Options:
     localUnits
       ? 'units: the most seen on the last day the item was scanned.'
       : 'units: listed now.',
+    'cost: bought reagents climb from the cheapest listing as the batch (--crafts) takes a larger share of the market.',
     'learn: the skill to learn the recipe; ~ is estimated, plan means a plan item teaches it (--trainer-only hides those).',
     `deposit: ${rate}% of the vendor price per unit for a ${hours}h listing (--hours); Classic Era rates, not yet confirmed on Forever. Refunded on sale, so "if sold" excludes it.`,
   ],
@@ -121,6 +139,8 @@ Options:
         return `at most ${issue.quantity} seen on ${issue.date}`;
       case 'few-listed':
         return `only ${issue.quantity} listed`;
+      case 'short-supply':
+        return `need ${issue.need}, only ${issue.listed} listed`;
       case 'rarely-scanned':
         return `seen on ${issue.seen} of the last ${issue.scans} full scans`;
       case 'undercut':

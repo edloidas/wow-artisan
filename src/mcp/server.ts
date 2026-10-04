@@ -20,7 +20,7 @@ import {
   marketJson,
   marketWarnings,
   materialsJson,
-  partsJson,
+  obtainJson,
   recommendationsJson,
   saleJson,
 } from '../serialize.ts';
@@ -95,10 +95,37 @@ function result(payload: object): CallToolResult {
 
 const viewMeta = { ui: { resourceUri: VIEW_URI } };
 
-export function itemPriceJson(advisor: Advisor, itemId: number, lang: Lang, now: Date) {
-  const pricer = advisor.pricer({ profession: 'blacksmithing', craftWith: ['mining'] });
+const heldItems = z
+  .array(
+    z.object({
+      item: z.string().describe('Item name or id'),
+      quantity: z.number().int().positive(),
+    }),
+  )
+  .optional();
+
+function resolveHoldings(
+  advisor: Advisor,
+  items: { item: string; quantity: number }[] | undefined,
+): Holding[] {
+  return (items ?? []).map(({ item, quantity }) => ({
+    itemId: advisor.resolveItem(item),
+    quantity,
+  }));
+}
+
+export function itemPriceJson(
+  advisor: Advisor,
+  itemId: number,
+  lang: Lang,
+  now: Date,
+  quantity = 1,
+  holdings: Holding[] = [],
+) {
+  const scope: Scope = { profession: 'blacksmithing', craftWith: ['mining'] };
+  const { pricer, routes } = advisor.obtain(scope, itemId, quantity, holdings);
   const stats = advisor.market.prices.get(itemId);
-  const cost = pricer.cost(itemId);
+  const obtained = obtainJson(pricer, { itemId, quantity }, routes, lang, now);
   return {
     market: marketJson(advisor.market, now),
     warnings: marketWarnings(advisor.market, now),
@@ -112,14 +139,10 @@ export function itemPriceJson(advisor: Advisor, itemId: number, lang: Lang, now:
     stats: stats ?? null,
     usualPrice: referencePrice(stats),
     status: classificationJson(pricer.classification(itemId)),
-    cheapestToObtain: {
-      unit: cost.unit === undefined ? undefined : Math.round(cost.unit),
-      source: cost.source,
-      recipe: cost.recipe?.name,
-      recipeUrl: cost.recipe && wowheadUrl('spell', cost.recipe.spellId, lang),
-      materials: cost.parts ? partsJson(pricer, cost.parts, lang) : undefined,
-    },
+    quantity,
+    toObtain: obtained.routes,
     sell: saleJson(pricer.sale(itemId)),
+    notes: obtained.notes,
   };
 }
 
@@ -161,6 +184,14 @@ export function createServer(deps: ServerDeps): McpServer {
           .max(50)
           .optional()
           .describe('Rows per category (default 8)'),
+        crafts: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe(
+            'Crafts to buy reagents for (default 1); larger batches pay more as they take a larger share of the market',
+          ),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
       _meta: viewMeta,
@@ -170,6 +201,7 @@ export function createServer(deps: ServerDeps): McpServer {
       const { pricer, result: found } = advisor.recommend(
         scopeOf(args),
         parseMoney(args.minProfit ?? '1s'),
+        args.crafts ?? 1,
       );
       return result(recommendationsJson(pricer, found, args.limit ?? 8, lang, now()));
     },
@@ -184,15 +216,7 @@ export function createServer(deps: ServerDeps): McpServer {
         'For materials the player holds: what selling each as is brings, and the recipes that earn more than that, following chains like ore -> bar -> item. Each use has the same fields as recommend_crafts, with the holdings costing what selling them nets, plus crafts (whole crafts the holdings cover, buying the other reagents) and gain (copper above selling the holdings those crafts use). Uses compete for the same holdings, so gains do not add up. Pass on any top-level warnings. Items and recipes carry Wowhead urls; link their names with them. Copper amounts: 10000 = 1g.',
       inputSchema: {
         profession,
-        items: z
-          .array(
-            z.object({
-              item: z.string().describe('Item name or id'),
-              quantity: z.number().int().positive(),
-            }),
-          )
-          .optional()
-          .describe('Materials to evaluate'),
+        items: heldItems.describe('Materials to evaluate'),
         fromInventory: z
           .boolean()
           .optional()
@@ -226,10 +250,7 @@ export function createServer(deps: ServerDeps): McpServer {
       const scope = scopeOf(args);
       const holdings: Holding[] = args.fromInventory
         ? advisor.ownedMaterials(scope)
-        : (args.items ?? []).map(({ item, quantity }) => ({
-            itemId: advisor.resolveItem(item),
-            quantity,
-          }));
+        : resolveHoldings(advisor, args.items);
       if (holdings.length === 0) throw new Error('Pass items, or fromInventory: true');
       const { pricer, report } = advisor.materials(
         scope,
@@ -245,16 +266,41 @@ export function createServer(deps: ServerDeps): McpServer {
     {
       title: 'Item price and market health',
       description:
-        'Market stats for one item: cheapest listing, usual price, listed quantity, history, market status, the cheapest way to obtain it, the auction price to list it at, what that nets, and what a merchant pays. Every amount, stats included, is copper per unit: 10000 = 1g, 100 = 1s.',
+        'Market stats for one item: cheapest listing, usual price, listed quantity, history, market status, the auction price to list it at, what that nets, and what a merchant pays. toObtain lists every way to get quantity of it, cheapest first: buying on the auction house (averaged over the batch, climbing from the cheapest listing as it takes a larger share of the market), a merchant, or smelting and crafting with blacksmithing and mining, using the given holdings first. Every amount, stats included, is copper per unit: 10000 = 1g, 100 = 1s.',
       inputSchema: {
         item: z.string().describe('Item name or id'),
+        quantity: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe('Units wanted (default 1); prices bought units for the whole batch'),
+        holdings: heldItems.describe(
+          'Materials the player holds; routes use them first, at what selling them nets',
+        ),
+        fromInventory: z
+          .boolean()
+          .optional()
+          .describe("Use everything in the player's saved Syndicator inventory as holdings"),
         market,
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async (args) => {
       const advisor = await deps.advisorFor(args.market);
-      return result(itemPriceJson(advisor, advisor.resolveItem(args.item), lang, now()));
+      const holdings = args.fromInventory
+        ? advisor.inventoryHoldings()
+        : resolveHoldings(advisor, args.holdings);
+      return result(
+        itemPriceJson(
+          advisor,
+          advisor.resolveItem(args.item),
+          lang,
+          now(),
+          args.quantity ?? 1,
+          holdings,
+        ),
+      );
     },
   );
 

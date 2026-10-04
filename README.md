@@ -31,11 +31,17 @@ bun run cli recipes -p blacksmithing -s 150 --trainer-only
 # Same, smelting bars yourself instead of buying them, with the materials listed
 bun run cli recipes -p blacksmithing -s 150 --craft-with mining --details
 
+# Priced for 100 crafts: big buys climb past the cheapest listings
+bun run cli recipes -p mining --crafts 100 --details
+
 # Sell 200 copper bars, or craft them into something?
 bun run cli materials -p blacksmithing -s 150 --have "Copper Bar:200" --craft-with mining
 
 # Every in-scope material in your bags and banks (from Syndicator)
 bun run cli materials -p blacksmithing --inventory
+
+# Cheapest way to get 100 bronze bars: buy them, or smelt them from your ore plus bought tin
+bun run cli obtain -p mining "Bronze Bar:100" --have "Copper Ore:60"
 
 # Use AHledger's US market instead of your own scans
 bun run cli markets
@@ -90,7 +96,9 @@ it through DNS rebinding. Any other `--host` drops that check and
 exposes the server without authentication to whoever can reach the address.
 
 Tools: `recommend_crafts`, `evaluate_materials`, `item_price`, `find_items`,
-`list_markets`. All are read-only. Each returns its JSON both as
+`list_markets`. `recommend_crafts` takes `crafts` to price a batch; `item_price`
+takes `quantity` and holdings and lists every way to obtain that many, cheapest
+first. All are read-only. Each returns its JSON both as
 `structuredContent` and as text. In hosts that support MCP Apps, such as Claude
 Desktop, `recommend_crafts` and `evaluate_materials` also render a view: tables
 by category with prices in gold, silver and copper, Wowhead links, and rows that
@@ -101,13 +109,24 @@ render the view; the answer is the same either way.
 ## How it decides
 
 - **Cost** of each reagent is the cheapest of: the auction house, a merchant, or
-  crafting it yourself from recipes in scope, up to three steps deep. On the
-  auction house a craft's few units come at the cheapest listing when the market
-  holds at least ten times as many and that listing is not far under the usual
-  price; otherwise at the usual price (AHledger: the median of what is listed).
-  Scans keep no price ladder, so a larger buy can't be priced along it. Merchant
-  prices are those Auctionator cached when you visited one, plus fluxes, coal,
-  coarse thread and green dye from trade-supply merchants.
+  crafting it yourself from recipes in scope, up to three steps deep. Reagents
+  are bought for the whole batch: one craft for `recipes` unless `--crafts`
+  says more, the crafts your materials cover for `materials`, the quantity for
+  `obtain`. Scans keep no price ladder, so one is modelled: prices climb
+  linearly from the cheapest listing to the median of what is listed (AHledger)
+  at the middle unit. Your own scans have no listing median, so the middle unit
+  costs the usual price, and at least 20% over the cheapest. A batch pays the
+  average along that climb, so a few units from a deep market cost about the
+  cheapest listing, and buying everything listed averages the median. Units
+  beyond what is listed cost the top of the climb, and the recipe turns thin
+  with "need N, only M listed". A route the market can fully supply beats one
+  it can't, whatever the price: past what is listed the price is a guess, and
+  on AHledger those units are not for sale today. A cheapest listing far under
+  the usual price is assumed to be a single unit and is ignored, so the climb
+  starts at the usual price. Crafts are whole: 3 bronze bars take 2 smelts, and
+  the spare bar counts at what it sells for, up to what it cost to make. Merchant prices are those
+  Auctionator cached when you visited one, plus fluxes, coal, coarse thread and
+  green dye from trade-supply merchants.
 - **List at** is the asking price to type into the auction house: the lower of
   the cheapest listing and the usual price. A sale nets it minus the 5% cut.
   **Vendor** is what a merchant pays. The product goes the way that nets more; on
@@ -153,8 +172,15 @@ render the view; the answer is the same either way.
   uses them, through intermediates such as ore → bar → item, is evaluated like
   `recipes`. Its gain is what a craft earns above selling what it uses; recipes
   that don't beat selling are left out. Crafts count only what you hold, buying
-  the other reagents. Uses compete for the same materials, so their totals don't
-  add up.
+  the other reagents for all of them. Uses compete for the same materials, so
+  their totals don't add up.
+- **Obtain** lists every way to get a quantity of one item, cheapest first:
+  buying it, a merchant, or each recipe that makes it. Your materials are used
+  first at what selling them nets, and what they don't cover is bought or
+  crafted, so 60 copper ore toward 100 bronze bars smelts the 60 and buys the
+  rest at the batch price. Each step of a route is chosen on its own, so the
+  winner can buy copper bars, smelt tin from ore and buy no bronze, or buy the
+  bronze outright. A route that needs more than is listed says so.
 
 ## Caveats
 
@@ -169,7 +195,11 @@ render the view; the answer is the same either way.
   confirmed on Forever. AHledger describes Forever as listing for 12, 24 or 48
   hours, but Auctionator's Forever build offers 2, 8 and 24.
 - Margins assume your listings don't move the price. A batch that is a large share
-  of the units on the market will sell lower.
+  of the units on the market will sell lower. Buying is priced along the
+  modelled climb; selling is not.
+- The climb is a model, not the market's real price ladder: straight, from the
+  cheapest listing to the median. On your own scans its steepness is a guess,
+  and the units counted are the most seen that day, not what is listed now.
 - Auctionator keys its database by realm only. With characters of both factions
   on one gameplay style, their scans mix in one market.
 - Auctionator records only the cheapest price per scan and the most units seen

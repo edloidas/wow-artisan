@@ -2,8 +2,14 @@
 import { parseArgs } from 'node:util';
 import { Advisor, isProfession, type Scope } from './advisor.ts';
 import type { Thresholds } from './engine/classify.ts';
-import type { HeldUse, Holding, HoldingSale } from './engine/materials.ts';
-import { DEPOSIT_RATES, isListingHours, type Pricer } from './engine/pricer.ts';
+import { type HeldUse, type Holding, type HoldingSale, heldPerCraft } from './engine/materials.ts';
+import {
+  type CostQuote,
+  DEPOSIT_RATES,
+  isListingHours,
+  type Pricer,
+  shortfalls,
+} from './engine/pricer.ts';
 import type { Category, Evaluation } from './engine/recommend.ts';
 import { loadGameData } from './gamedata/load.ts';
 import type { Profession } from './gamedata/types.ts';
@@ -18,7 +24,7 @@ import {
 import { parseMoney } from './money.ts';
 import { listAhledgerMarkets } from './prices/ahledger.ts';
 import { marketFreshness } from './prices/freshness.ts';
-import { materialsJson, recommendationsJson } from './serialize.ts';
+import { materialsJson, obtainJson, recommendationsJson } from './serialize.ts';
 import { FALLBACK_BUILD, findInstallation } from './wow.ts';
 import { wowheadUrl } from './wowhead.ts';
 
@@ -36,6 +42,7 @@ async function main(): Promise<void> {
       'min-skill': { type: 'string' },
       'trainer-only': { type: 'boolean' },
       'min-profit': { type: 'string' },
+      crafts: { type: 'string' },
       hours: { type: 'string' },
       'craft-with': { type: 'string', multiple: true },
       market: { type: 'string', short: 'm' },
@@ -91,12 +98,16 @@ async function main(): Promise<void> {
 
   if (command === 'recipes') {
     const minProfit = parseMoney(values['min-profit'] ?? '1s');
-    const { pricer, result } = advisor.recommend(scope, minProfit);
+    const crafts = values.crafts === undefined ? 1 : Number(values.crafts);
+    if (!Number.isSafeInteger(crafts) || crafts < 1)
+      throw new Error(`--crafts takes a positive whole number, got '${values.crafts}'`);
+    const { pricer, result } = advisor.recommend(scope, minProfit, crafts);
     if (values.json) {
       console.log(JSON.stringify(recommendationsJson(pricer, result, limit, lang), null, 2));
       return;
     }
     printHeader(out, advisor, scope);
+    if (crafts > 1) console.log(t.batch(crafts));
     console.log(`${t.summary(result.considered, result.unpriced, result.bound, minProfit)}\n`);
     for (const [category, list] of Object.entries(result.groups) as [Category, Evaluation[]][]) {
       printGroup(out, pricer, category, list, {
@@ -132,15 +143,29 @@ async function main(): Promise<void> {
         limit,
         details: values.details ?? false,
         columns: heldColumnsFor(t, category),
-        note: (e) =>
-          t.uses(
-            [...e.consumes]
-              .map(([id, n]) => `${formatCount(n * e.crafts)}x ${itemLink(out, pricer, id)}`)
-              .join(', '),
-          ),
+        note: (e) => t.uses(heldList(out, pricer, e.consumes, e.crafts)),
       });
     }
     printMaterialNotes(t, pricer);
+    return;
+  }
+
+  if (command === 'obtain') {
+    const [, target] = positionals;
+    if (!target) throw new Error('Name what to obtain, e.g. obtain "Bronze Bar:100"');
+    const wanted = target.includes(':')
+      ? parseHolding(advisor, target)
+      : { itemId: advisor.resolveItem(target), quantity: 1 };
+    const holdings: Holding[] = values.inventory
+      ? advisor.inventoryHoldings()
+      : (values.have ?? []).map((spec) => parseHolding(advisor, spec));
+    const { pricer, routes } = advisor.obtain(scope, wanted.itemId, wanted.quantity, holdings);
+    if (values.json) {
+      console.log(JSON.stringify(obtainJson(pricer, wanted, routes, lang), null, 2));
+      return;
+    }
+    printHeader(out, advisor, scope);
+    printRoutes(out, pricer, wanted, routes);
     return;
   }
 
@@ -172,7 +197,8 @@ function parseHolding(advisor: Advisor, spec: string): Holding {
   const separator = spec.lastIndexOf(':');
   if (separator === -1) throw new Error(`Use item:quantity, got '${spec}'`);
   const quantity = Number(spec.slice(separator + 1));
-  if (!Number.isInteger(quantity) || quantity <= 0) throw new Error(`Bad quantity in '${spec}'`);
+  if (!Number.isSafeInteger(quantity) || quantity <= 0)
+    throw new Error(`Bad quantity in '${spec}'`);
   return { itemId: advisor.resolveItem(spec.slice(0, separator)), quantity };
 }
 
@@ -323,19 +349,75 @@ function printGroup<E extends Evaluation>(
           .map((r) => reasonText(t, name, r))
           .join('; ')}`,
       );
-    if (details) {
-      const mats = e.parts.map((p) => {
-        const how =
-          p.quote.source === 'craft' && p.quote.recipe
-            ? t.crafted(pricer.recipeName(p.quote.recipe, out.lang))
-            : t.sources[p.quote.source];
-        return `${p.count}x ${itemLink(out, pricer, p.itemId)} @${t.money(p.quote.unit)} (${how})`;
-      });
-      console.log(`    ${mats.join(', ')}`);
-    }
+    if (details) console.log(`    ${partsText(out, pricer, e.parts, 1)}`);
   }
   if (list.length > limit) console.log(`    ${t.more(list.length - limit)}`);
   console.log('');
+}
+
+/** How a quote gets its units, e.g. "auction, from 2s00c, 1173 listed". */
+function quoteText(out: Out, pricer: Pricer, quote: CostQuote): string {
+  const { t } = out;
+  if (quote.source === 'craft' && quote.recipe)
+    return t.crafted(pricer.recipeName(quote.recipe, out.lang));
+  if (quote.source === 'held' && quote.rest)
+    return t.heldPart(Math.round(quote.held ?? 0), quoteText(out, pricer, quote.rest));
+  if (
+    quote.source === 'auction' &&
+    quote.cheapest !== undefined &&
+    quote.listed !== undefined &&
+    Math.round(quote.unit ?? 0) > Math.round(quote.cheapest)
+  )
+    return t.auctionFrom(t.money(Math.round(quote.cheapest)), quote.listed);
+  return t.sources[quote.source];
+}
+
+/** Reagents of `crafts` crafts, e.g. "50x Tin Bar @2s02c (auction, from 2s00c, 1173 listed)". */
+function partsText(
+  out: Out,
+  pricer: Pricer,
+  parts: CostQuote['parts'] = [],
+  crafts: number,
+): string {
+  return parts
+    .map(
+      (p) =>
+        `${formatCount(p.count * crafts)}x ${itemLink(out, pricer, p.itemId)} @${out.t.money(p.quote.unit)} (${quoteText(out, pricer, p.quote)})`,
+    )
+    .join(', ');
+}
+
+function printRoutes(out: Out, pricer: Pricer, wanted: Holding, routes: CostQuote[]): void {
+  const { t } = out;
+  console.log(`== ${t.obtainTitle(itemLink(out, pricer, wanted.itemId), wanted.quantity)}`);
+  const priced = routes.filter((r) => r.unit !== undefined);
+  if (priced.length === 0) {
+    console.log(t.noRoute);
+    return;
+  }
+  const labels = priced.map((r) => quoteText(out, pricer, r));
+  const width = Math.max(32, ...labels.map((l) => l.length + 1));
+  const { columns: c } = t;
+  console.log(`${c.route.padEnd(width)}${c.unitCost.padStart(11)}${c.total.padStart(12)}`);
+  for (const [i, route] of priced.entries()) {
+    const label = (labels[i] ?? '').padEnd(width);
+    const unit = t.money(route.unit).padStart(11);
+    const total = t.money((route.unit ?? 0) * wanted.quantity).padStart(12);
+    console.log(`${label}${unit}${total}${i === 0 ? `  ${t.cheapestRoute}` : ''}`);
+    const parts = route.source === 'held' ? route.rest : route;
+    if (parts?.source === 'craft' && parts.recipe) {
+      const crafts = parts.crafts ?? parts.units / parts.recipe.output.count;
+      console.log(`    ${partsText(out, pricer, parts.parts, crafts)}`);
+      if (parts.surplus) console.log(`    ${t.spare(formatCount(parts.surplus))}`);
+      const used = heldPerCraft(parts.parts ?? [], crafts);
+      if (used.size > 0) console.log(`    ${t.uses(heldList(out, pricer, used))}`);
+    }
+    for (const { itemId, need, listed } of shortfalls(wanted.itemId, route)) {
+      const issue = t.issue({ kind: 'short-supply', need, listed });
+      console.log(`    ! ${pricer.name(itemId, out.lang)}: ${issue}`);
+    }
+  }
+  console.log(`\n${t.obtainNotes.join('\n')}`);
 }
 
 function printRecipeNotes(t: Messages, advisor: Advisor, pricer: Pricer): void {
@@ -369,6 +451,12 @@ function printHoldings(out: Out, pricer: Pricer, holdings: HoldingSale[]): void 
   }
   const total = holdings.reduce((sum, h) => sum + (h.sellTotal ?? 0), 0);
   console.log(`${t.allOfIt(total)}\n`);
+}
+
+function heldList(out: Out, pricer: Pricer, used: Map<number, number>, times = 1): string {
+  return [...used]
+    .map(([id, n]) => `${formatCount(n * times)}x ${itemLink(out, pricer, id)}`)
+    .join(', ');
 }
 
 function formatCount(units: number): string {

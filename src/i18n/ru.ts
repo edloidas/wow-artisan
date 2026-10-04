@@ -24,6 +24,7 @@ export const ru: Messages = {
 Использование:
   wow-artisan recipes   -p <профессия> [-s <навык>] [--min-profit 50с] [опции]
   wow-artisan materials -p <профессия> (--have "Copper Bar:200" ... | --inventory) [--min-profit 10с] [опции]
+  wow-artisan obtain    -p <профессия> "Bronze Bar:100" [--have "Copper Ore:40" ... | --inventory] [опции]
   wow-artisan markets
   wow-artisan sync      [--build <версия>]
 
@@ -35,6 +36,7 @@ export const ru: Messages = {
       --min-skill <n>       скрыть рецепты, изучаемые ниже этого навыка
       --trainer-only        скрыть рецепты из чертежей, оставить рецепты учителя
       --min-profit <сумма>  например 50с, 1з20с, 2з или 50s, 1g20s (по умолчанию 1с; для materials — выгода сверх продажи, по умолчанию 1м)
+      --crafts <n>          recipes: покупать реагенты на столько крафтов (по умолчанию 1)
       --hours <2|8|24>      срок лота для расчёта залога (по умолчанию как в Auctionator, иначе 24)
       --craft-with <имя>    другая профессия, которая может делать промежуточные материалы (можно повторять)
   -m, --market <spec>       auctionator[:realm] (по умолчанию) или ahledger:<id рынка>
@@ -81,6 +83,9 @@ export const ru: Messages = {
     gain: 'выгода',
     crafts: 'крафты',
     totalGain: 'всего',
+    route: 'способ',
+    unitCost: 'цена/шт',
+    total: 'всего',
   },
   plan: 'чертеж',
   anySkill: 'любой навык',
@@ -98,6 +103,18 @@ export const ru: Messages = {
   more: (count) => `... ещё ${count}`,
   risk: 'риск',
   crafted: (recipe) => `крафт: ${recipe}`,
+  auctionFrom: (cheapest, listed) => `аукцион, от ${cheapest}, на АХ ${listed}`,
+  heldPart: (held, rest) => `своих ${held} + ${rest}`,
+  spare: (units) => `лишних ${units} шт., по цене их продажи, но не дороже их себестоимости`,
+  batch: (crafts) => `реагенты покупаются на ${crafts} крафтов`,
+  obtainTitle: (item, quantity) => `${item} x${quantity}`,
+  cheapestRoute: '<- дешевле всего',
+  noRoute: 'Ничто в рамках запроса не даёт этот предмет: нет лотов, торговца или рецепта.',
+  obtainNotes: [
+    'цена/шт усреднена по всем единицам. Покупка дорожает от самого дешёвого лота, чем большую долю рынка она забирает; сверх выставленного единицы стоят по верхней цене.',
+    'Сначала идут способы, которые рынок покрывает целиком, при любой цене: единицы сверх выставленного — догадка, и сегодня их может не быть в продаже.',
+    'свои единицы стоят столько, сколько принесёт их продажа, поэтому способ, который их тратит, соревнуется с их продажей.',
+  ],
   uses: (list) => `расходует ${list}`,
   noGainfulRecipe: (minProfit) =>
     `Ни один рецепт не приносит ${money(minProfit)} или больше сверх продажи материалов.`,
@@ -114,6 +131,7 @@ export const ru: Messages = {
     localUnits
       ? 'на АХ: больше всего единиц, замеченных в последний день, когда предмет сканировался.'
       : 'на АХ: выставлено сейчас.',
+    'затраты: покупные реагенты дорожают от самого дешёвого лота, чем большую долю рынка забирает партия (--crafts).',
     'изуч.: навык для изучения рецепта; ~ — оценка, чертеж — рецепт учится из чертежа (--trainer-only скрывает такие).',
     `залог: ${rate}% цены торговца за единицу для лота на ${hours} ч (--hours); ставки Classic Era, на Forever ещё не подтверждены. При продаже возвращается, поэтому в «продано» не входит.`,
   ],
@@ -134,6 +152,8 @@ export const ru: Messages = {
         return `не больше ${issue.quantity} шт. на ${issue.date}`;
       case 'few-listed':
         return `выставлено всего ${issue.quantity} шт.`;
+      case 'short-supply':
+        return `нужно ${issue.need}, выставлено всего ${issue.listed} шт.`;
       case 'rarely-scanned':
         return `был в ${issue.seen} из ${issue.scans} последних полных сканов`;
       case 'undercut':

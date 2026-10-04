@@ -6,8 +6,21 @@ import {
   DEFAULT_THRESHOLDS,
   referencePrice,
 } from '../src/engine/classify.ts';
-import { type Holding, heldUses, holdingSale } from '../src/engine/materials.ts';
-import { auctionParts, type ListingHours, Pricer } from '../src/engine/pricer.ts';
+import {
+  type Holding,
+  heldCandidates,
+  heldPerCraft,
+  heldUses,
+  holdingSale,
+  mergeHoldings,
+} from '../src/engine/materials.ts';
+import {
+  auctionParts,
+  type CostQuote,
+  type ListingHours,
+  Pricer,
+  shortfalls,
+} from '../src/engine/pricer.ts';
 import { type Evaluation, recommend, selectRecipes } from '../src/engine/recommend.ts';
 import { buildGameData, localNames } from '../src/gamedata/load.ts';
 import type { GameData, ItemInfo, Recipe } from '../src/gamedata/types.ts';
@@ -96,9 +109,10 @@ const game: GameData = {
   ],
 };
 
+// Reagents are listed at one price, so buying any amount of them pays it.
 const prices = new Map<number, PriceStats>([
-  [ORE, { median: 20, min: 18, quantity: 500 }],
-  [BAR, { median: 100, min: 95, quantity: 300 }],
+  [ORE, { median: 18, min: 18, quantity: 500 }],
+  [BAR, { median: 95, min: 95, quantity: 300 }],
   [SWORD, { median: 2000, min: 1900, quantity: 50, median7d: 1950, median30d: 2000 }],
   [DAGGER, { median: 900, min: 900, quantity: 2 }],
 ]);
@@ -159,20 +173,47 @@ describe('classify', () => {
 });
 
 describe('buyPrice', () => {
-  const stats = { min: 95, median7d: 100, quantity: 300 };
+  const unit = (...args: Parameters<typeof buyPrice>) => buyPrice(...args)?.unit;
+  // Climbs from 90 at the first unit to the 110 median at the 100th, and 130 at the 200th.
+  const ahledger = { min: 90, median: 110, quantity: 200 };
 
-  test('a small buy from a deep market pays the cheapest listing', () => {
-    expect(buyPrice(stats, 4)).toBe(95);
-    expect(buyPrice({ min: 95, median: 100, quantity: 300 }, 4)).toBe(95);
+  test('a small buy from a deep market pays about the cheapest listing', () => {
+    expect(unit(ahledger, 2)).toBe(90.2);
+    expect(buyPrice(ahledger, 2)).toMatchObject({ cheapest: 90, listed: 200 });
   });
 
-  test('a buy that is a large share of the market pays the usual price', () => {
-    expect(buyPrice(stats, 40)).toBe(100);
-    expect(buyPrice({ min: 95, median: 110, quantity: 300 }, 40)).toBe(110);
+  test('the more of the market a batch takes, the more each unit costs on average', () => {
+    expect(unit(ahledger, 100)).toBe(100);
+    expect(unit(ahledger, 200)).toBe(110);
+  });
+
+  test('units beyond what is listed cost the top of the ladder', () => {
+    // 200 at the 110 average, 200 more at 130
+    expect(unit(ahledger, 400)).toBe(120);
+  });
+
+  test('a listing median equal to the cheapest is a flat market', () => {
+    expect(unit({ min: 95, median: 95, quantity: 300 }, 300)).toBe(95);
+  });
+
+  test('without a listing median, the ladder rises to the usual price, and at least 20%', () => {
+    // Local scans: min 100, usual 150, so the middle unit costs 150.
+    expect(unit({ min: 100, median7d: 150, quantity: 100 }, 100)).toBe(150);
+    // A cheapest listing at the usual price still climbs to 120 by the middle unit.
+    expect(unit({ min: 100, median7d: 100, quantity: 100 }, 100)).toBe(120);
+    expect(unit({ min: 100, median7d: 80, quantity: 100 }, 50)).toBe(110);
   });
 
   test('a lone cheap listing far under the usual price is not trusted', () => {
-    expect(buyPrice({ min: 50, median7d: 100, quantity: 300 }, 4)).toBe(100);
+    expect(buyPrice({ min: 50, median: 100, median7d: 100, quantity: 300 }, 4)).toMatchObject({
+      unit: 100,
+      cheapest: 100,
+    });
+  });
+
+  test('nothing listed cannot be bought', () => {
+    expect(buyPrice({ min: 90, quantity: 0 }, 1)).toBeUndefined();
+    expect(buyPrice(undefined)).toBeUndefined();
   });
 });
 
@@ -269,16 +310,16 @@ describe('materials', () => {
       vendorBuy: new Map([[FLUX, 50]]),
       thresholds: DEFAULT_THRESHOLDS,
       recipes: game.recipes.filter((r) => professions.includes(r.profession)),
-      held: new Set(held.map((h) => h.itemId)),
+      held: new Map(held.map((h) => [h.itemId, h.quantity])),
     });
     const all = selectRecipes(game.recipes, { profession: 'blacksmithing' });
-    return { p, groups: heldUses(recommend(p, all, 1), held) };
+    return { p, groups: heldUses(p, heldCandidates(p, all), held, 1) };
   }
 
   test('a held reagent costs what selling it nets, and is not bought', () => {
     const { p } = materials([{ itemId: BAR, quantity: 100 }], ['blacksmithing']);
-    // min(95, 100) * 0.95
-    expect(p.cost(BAR)).toEqual({ unit: 90.25, source: 'held' });
+    // 95 * 0.95
+    expect(p.cost(BAR)).toEqual({ unit: 90.25, source: 'held', units: 1, held: 1 });
     const sword = game.recipes.find((r) => r.name === 'Sword');
     if (!sword) throw new Error('no sword recipe');
     expect(auctionParts(p.craftCost(sword).parts ?? []).map((part) => part.itemId)).toEqual([]);
@@ -368,6 +409,328 @@ describe('presence over full scans', () => {
 
   test('markets without scan days, like AHledger, skip the check', () => {
     expect(classify({ min: 100, quantity: 20 }).status).toBe('stable');
+  });
+});
+
+describe('batches', () => {
+  // Ore climbs from 15c to the 20c median at the 50th of 100 units; bars cost 40c flat.
+  const batchPrices = new Map<number, PriceStats>([
+    [ORE, { min: 15, median: 20, quantity: 100 }],
+    [BAR, { min: 40, median: 40, quantity: 1000 }],
+    [SWORD, { median: 2000, min: 2000, quantity: 50 }],
+  ]);
+
+  function batchPricer(held?: Map<number, number>, overrides: [number, PriceStats][] = []) {
+    return new Pricer({
+      game,
+      market: { ...market, prices: new Map([...batchPrices, ...overrides]) },
+      vendorBuy: new Map([[FLUX, 50]]),
+      thresholds: DEFAULT_THRESHOLDS,
+      recipes: game.recipes,
+      ...(held ? { held } : {}),
+    });
+  }
+  const sword = game.recipes.find((r) => r.name === 'Sword') as Recipe;
+
+  test('a larger batch pays more per unit', () => {
+    const p = batchPricer();
+    // 10 ore: 15 + 5 * 10/100
+    expect(p.cost(BAR, [], 10)).toMatchObject({ unit: 15.5, source: 'craft', units: 10 });
+    // 100 ore, the whole market, averages the 20c median
+    expect(p.cost(BAR, [], 100).unit).toBe(20);
+  });
+
+  test('a route the market can supply beats a cheaper one it cannot', () => {
+    const p = batchPricer();
+    // 300 ore of 100 listed would average 23.33c, but only bought bars come in that number
+    const routes = p.routes(BAR, 300);
+    expect(routes.map((r) => [r.source, r.short ?? false])).toEqual([
+      ['auction', false],
+      ['craft', true],
+    ]);
+    expect(routes[1]?.unit).toBeCloseTo(23.33, 2);
+    expect(p.cost(BAR, [], 300)).toMatchObject({ source: 'auction', unit: 40 });
+    expect(shortfalls(BAR, routes[1] as CostQuote)).toEqual([
+      { itemId: ORE, need: 300, listed: 100 },
+    ]);
+  });
+
+  test('the craft batch reaches reagents of intermediates', () => {
+    // 25 swords: 100 bars from 100 ore averaging 20c
+    expect(batchPricer().craftCost(sword, [], 25).parts?.[0]?.quote).toMatchObject({
+      unit: 20,
+      units: 100,
+    });
+  });
+
+  test('past what is listed, a flat market prices units at the listing price', () => {
+    expect(buyPrice({ min: 40, median: 40, quantity: 100 }, 1000)).toMatchObject({
+      unit: 40,
+      listed: 100,
+    });
+  });
+
+  test('an item the player holds lists the held route among the others', () => {
+    const p = batchPricer(new Map([[BAR, 30]]));
+    expect(p.routes(BAR, 50).map((r) => r.source)).toEqual(['craft', 'held', 'auction']);
+  });
+
+  test('a held share counts toward what one craft uses, the bought rest does not', () => {
+    const p = batchPricer(new Map([[ORE, 30]]));
+    // 25 swords smelt 100 bars: 30 from held ore, 70 from bought ore
+    const crafted = p.craftCost(sword, [], 25);
+    expect([...heldPerCraft(crafted.parts ?? [])]).toEqual([[ORE, 30 / 25]]);
+  });
+
+  test('holdings short of the batch cover what they can, and the rest is bought', () => {
+    const p = batchPricer(new Map([[BAR, 30]]));
+    // 30 held at what they net (40 * 0.95 = 38), 20 smelted from ore at 15 + 5 * 20/100 = 16
+    const quote = p.cost(BAR, [], 50);
+    expect(quote).toMatchObject({ source: 'held', units: 50, held: 30 });
+    expect(quote.rest).toMatchObject({ source: 'craft', units: 20, unit: 16 });
+    expect(quote.unit).toBe(29.2);
+  });
+
+  test('a stale reagent short for the batch says both', () => {
+    const p = batchPricer(undefined, [
+      [ORE, { min: 15, median: 20, quantity: 3 }],
+      [BAR, { min: 40, median: 40, quantity: 3 }],
+    ]);
+    const [thin] = recommend(p, [sword], 0, 2).groups.thin;
+    expect(reasonsOf(p, thin)).toEqual(['Ore: only 3 listed', 'Ore: need 8, only 3 listed']);
+  });
+
+  test('a batch needing more than is listed makes the recipe thin and says by how much', () => {
+    // 150 bars listed: 200 bars for 50 swords can't be bought or smelted from listed ore
+    const p = batchPricer(undefined, [[BAR, { min: 40, median: 40, quantity: 150 }]]);
+    const [one] = recommend(p, [sword], 0).groups.steady;
+    expect(one?.batch).toBe(1);
+    const thin = recommend(p, [sword], 0, 50).groups.thin;
+    expect(thin.map((e) => [e.batch, reasonsOf(p, e)])).toEqual([
+      [50, ['Ore: need 200, only 100 listed']],
+    ]);
+  });
+
+  test('materials buy the other reagents for every craft the holdings cover', () => {
+    // 25 flux held, the only limit: 25 swords smelt 100 bars from 100 ore averaging 20c
+    const held: Holding[] = [{ itemId: FLUX, quantity: 25 }];
+    const p = batchPricer(new Map([[FLUX, 25]]));
+    const [use] = heldUses(p, heldCandidates(p, [sword]), held, 1).steady;
+    expect(use).toMatchObject({ batch: 25, crafts: 25 });
+    expect(use?.parts[0]?.quote.unit).toBe(20);
+  });
+
+  test('held units in the bought rest count too', () => {
+    // 50 bars: 30 held, and the other 20 smelted from 20 of 30 held ore
+    const p = batchPricer(
+      new Map([
+        [BAR, 30],
+        [ORE, 30],
+      ]),
+    );
+    const quote = p.cost(BAR, [], 50);
+    expect([...heldPerCraft([{ itemId: BAR, count: 50, quote }])]).toEqual([
+      [BAR, 30],
+      [ORE, 20],
+    ]);
+  });
+
+  test('two branches drawing on one holding shrink the batch until it covers both', () => {
+    const ALLOY = 30;
+    const alloy = recipe(
+      401,
+      'Alloy',
+      'blacksmithing',
+      ALLOY,
+      [
+        [BAR, 1],
+        [ORE, 1],
+      ],
+      1,
+    );
+    const smeltBar = game.recipes.find((r) => r.name === 'Smelt Bar') as Recipe;
+    // Bars climb from 13c to 19c by the 5th of 10: one is bought under the 14.25c that held
+    // ore nets, but a batch of them smelts held ore, which the direct ore branch also uses.
+    const alloyPrices = new Map<number, PriceStats>([
+      [ORE, { min: 15, median: 20, quantity: 100 }],
+      [BAR, { min: 13, median: 19, quantity: 10 }],
+      [ALLOY, { min: 1000, median: 1000, quantity: 50 }],
+    ]);
+    const withOre = (ore: number) =>
+      new Pricer({
+        game: { ...game, items: { ...game.items, [ALLOY]: item('Alloy', 1) } },
+        market: { ...market, prices: alloyPrices },
+        vendorBuy: new Map(),
+        thresholds: DEFAULT_THRESHOLDS,
+        recipes: [smeltBar, alloy],
+        held: new Map([[ORE, ore]]),
+      });
+    const single = recommend(withOre(Infinity), [alloy], 1);
+    expect(single.groups.steady[0]?.parts[0]?.quote.source).toBe('auction');
+    const [use] = heldUses(withOre(10), single, [{ itemId: ORE, quantity: 10 }], 1).steady;
+    // The first pass covers 10 crafts with 1 ore each; smelting needs 2, so 5
+    expect(use).toMatchObject({ batch: 5, crafts: 5 });
+    expect([...(use?.consumes ?? [])]).toEqual([[ORE, 2]]);
+  });
+
+  test('a holding only worth using at scale is still found', () => {
+    // Bars climb from 13c to 16c at the 50th of 100: one craft buys 4 under the 14.25c held ore
+    // nets, but 25 crafts would climb past it, so they smelt the held ore instead
+    const ore: Holding[] = [{ itemId: ORE, quantity: 100 }];
+    const p = batchPricer(new Map([[ORE, 100]]), [
+      [ORE, { min: 15, median: 15, quantity: 1000 }],
+      [BAR, { min: 13, median: 16, quantity: 100 }],
+    ]);
+    expect(recommend(p, [sword], 1).groups.steady[0]?.parts[0]?.quote.source).toBe('auction');
+    const [use] = heldUses(p, heldCandidates(p, [sword]), ore, 1).steady;
+    expect(use).toMatchObject({ batch: 25, crafts: 25 });
+    expect([...(use?.consumes ?? [])]).toEqual([[ORE, 4]]);
+  });
+
+  test('a batch grows to every craft the holdings cover when intermediates come in pairs', () => {
+    // Ore smelts into 2 bars: one craft smelts a whole ore for its bar, 10 crafts only 5
+    const smelt = game.recipes.find((r) => r.name === 'Smelt Bar') as Recipe;
+    const pairs = { ...smelt, output: { itemId: BAR, count: 2 } };
+    const dagger = recipe(203, 'Dagger', 'blacksmithing', DAGGER, [[BAR, 1]], 1);
+    const p = new Pricer({
+      game,
+      market: {
+        ...market,
+        prices: new Map([...batchPrices, [DAGGER, { min: 900, median: 900, quantity: 50 }]]),
+      },
+      vendorBuy: new Map(),
+      thresholds: DEFAULT_THRESHOLDS,
+      recipes: [pairs, dagger],
+      held: new Map([[ORE, 10]]),
+    });
+    const [use] = heldUses(
+      p,
+      heldCandidates(p, [dagger]),
+      [{ itemId: ORE, quantity: 10 }],
+      1,
+    ).steady;
+    expect(use).toMatchObject({ crafts: 20 });
+    expect([...(use?.consumes ?? [])]).toEqual([[ORE, 0.5]]);
+  });
+
+  test('the same item held twice counts both', () => {
+    const held: Holding[] = [
+      { itemId: FLUX, quantity: 10 },
+      { itemId: FLUX, quantity: 15 },
+    ];
+    const p = batchPricer(new Map([[FLUX, 25]]));
+    expect(heldUses(p, heldCandidates(p, [sword]), held, 1).steady[0]?.crafts).toBe(25);
+    expect(mergeHoldings(held)).toEqual([{ itemId: FLUX, quantity: 25 }]);
+  });
+});
+
+describe('bronze: every entry point competes', () => {
+  const [CU_ORE, TIN_ORE, CU_BAR, TIN_BAR, BRONZE] = [21, 22, 23, 24, 25];
+  const smelt = (spellId: number, output: number, reagents: [number, number][], count = 1) => ({
+    ...recipe(spellId, 'Smelt', 'mining', output, reagents, 1),
+    output: { itemId: output, count },
+  });
+  const recipes = [
+    smelt(1, CU_BAR, [[CU_ORE, 1]]),
+    smelt(2, TIN_BAR, [[TIN_ORE, 1]]),
+    smelt(
+      3,
+      BRONZE,
+      [
+        [CU_BAR, 1],
+        [TIN_BAR, 1],
+      ],
+      2,
+    ),
+  ];
+  const bronzeGame: GameData = {
+    build: 'test',
+    items: {
+      [CU_ORE]: item('Copper Ore', 1),
+      [TIN_ORE]: item('Tin Ore', 1),
+      [CU_BAR]: item('Copper Bar', 1),
+      [TIN_BAR]: item('Tin Bar', 1),
+      [BRONZE]: item('Bronze Bar', 1),
+    },
+    recipes,
+  };
+  const flat = (price: number, quantity = 100_000): PriceStats => ({
+    min: price,
+    median: price,
+    quantity,
+  });
+  const base: Record<number, PriceStats> = {
+    [CU_ORE]: flat(10),
+    [TIN_ORE]: flat(30),
+    [CU_BAR]: flat(20),
+    [TIN_BAR]: flat(40),
+    [BRONZE]: flat(100),
+  };
+
+  function bronze(prices: Record<number, PriceStats>, units = 100, held?: Map<number, number>) {
+    const p = new Pricer({
+      game: bronzeGame,
+      market: {
+        ...market,
+        prices: new Map(Object.entries(prices).map(([id, stats]) => [Number(id), stats])),
+      },
+      vendorBuy: new Map(),
+      thresholds: DEFAULT_THRESHOLDS,
+      recipes,
+      ...(held ? { held } : {}),
+    });
+    return p.cost(BRONZE, [], units);
+  }
+
+  /** The chosen route as a tree of sources, e.g. craft(auction, craft(auction)). */
+  function path(quote: CostQuote | undefined): string {
+    if (!quote) return '?';
+    if (quote.source === 'craft')
+      return `craft(${(quote.parts ?? []).map((p) => path(p.quote)).join(', ')})`;
+    if (quote.source === 'held' && quote.rest) return `held ${quote.held} + ${path(quote.rest)}`;
+    return quote.source;
+  }
+
+  test('ores cheapest: smelt both bars, then bronze', () => {
+    expect(path(bronze(base))).toBe('craft(craft(auction), craft(auction))');
+    // 1 copper bar at 10c and 1 tin bar at 30c make 2 bronze
+    expect(bronze(base).unit).toBe(20);
+  });
+
+  test('cheap copper bars are bought, tin is still smelted', () => {
+    expect(path(bronze({ ...base, [CU_BAR]: flat(8) }))).toBe('craft(auction, craft(auction))');
+  });
+
+  test('cheap tin bars are bought, copper is still smelted', () => {
+    expect(path(bronze({ ...base, [TIN_BAR]: flat(25) }))).toBe('craft(craft(auction), auction)');
+  });
+
+  test('bronze cheaper than any chain is bought outright', () => {
+    expect(path(bronze({ ...base, [BRONZE]: flat(15) }))).toBe('auction');
+  });
+
+  test('tin ore missing from the market falls back to tin bars', () => {
+    expect(path(bronze({ ...base, [TIN_ORE]: flat(30, 0) }))).toBe(
+      'craft(craft(auction), auction)',
+    );
+  });
+
+  test('held tin ore goes first and the rest is bought', () => {
+    const quote = bronze(base, 100, new Map([[TIN_ORE, 40]]));
+    expect(path(quote)).toBe('craft(craft(auction), craft(held 40 + auction))');
+  });
+
+  test('an odd quantity takes whole crafts, and a spare worth more than it cost only covers itself', () => {
+    // 3 bronze: 2 crafts at 40c make 4 at 20c each; the spare would net 95c, credited 20c
+    const quote = bronze(base, 3);
+    expect(quote).toMatchObject({ source: 'craft', crafts: 2, surplus: 1 });
+    expect(quote.unit).toBe(20);
+  });
+
+  test('a spare that sells under its cost raises what the wanted units cost', () => {
+    // Nothing listed: the spare goes to a merchant for 1c
+    const quote = bronze({ ...base, [BRONZE]: flat(100, 0) }, 3);
+    expect(quote.unit).toBe((80 - 1) / 3);
   });
 });
 

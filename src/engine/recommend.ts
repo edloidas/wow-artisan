@@ -1,5 +1,11 @@
 import type { Profession, Recipe } from '../gamedata/types.ts';
-import { availabilityProblem, type ItemStatus, type MarketIssue, worstStatus } from './classify.ts';
+import {
+  availabilityProblem,
+  type ItemStatus,
+  type MarketIssue,
+  supplyProblem,
+  worstStatus,
+} from './classify.ts';
 import { AUCTION_CUT, auctionParts, type Part, type Pricer, type SaleQuote } from './pricer.ts';
 
 /**
@@ -32,7 +38,9 @@ export type RecipeFilter = {
 
 export type Evaluation = {
   recipe: Recipe;
-  /** Copper for one craft, with every reagent bought or crafted at its cheapest. */
+  /** Crafts the reagents are bought for; larger batches climb the auction price ladder. */
+  batch: number;
+  /** Copper for one craft, with every reagent bought or crafted at its cheapest for the batch. */
   cost: number;
   parts: Part[];
   sale: SaleQuote;
@@ -68,6 +76,8 @@ export type Recommendations = {
   /** Recipes skipped because the product binds on pickup and no vendor buys it. */
   bound: number;
   considered: number;
+  /** Crafts the reagents were bought for. */
+  batch: number;
 };
 
 export function selectRecipes(recipes: Recipe[], filter: RecipeFilter): Recipe[] {
@@ -80,8 +90,8 @@ export function selectRecipes(recipes: Recipe[], filter: RecipeFilter): Recipe[]
   );
 }
 
-export function evaluateRecipe(pricer: Pricer, recipe: Recipe): Evaluation | undefined {
-  const crafted = pricer.craftCost(recipe);
+export function evaluateRecipe(pricer: Pricer, recipe: Recipe, batch = 1): Evaluation | undefined {
+  const crafted = pricer.craftCost(recipe, [], batch);
   if (crafted.unit === undefined) return undefined;
   const cost = crafted.unit * recipe.output.count;
   const parts = crafted.parts ?? [];
@@ -92,18 +102,23 @@ export function evaluateRecipe(pricer: Pricer, recipe: Recipe): Evaluation | und
   const reasons: Reason[] = [];
   for (const part of auctionParts(parts)) {
     const stats = pricer.ctx.market.prices.get(part.itemId);
-    const problem: MarketIssue | undefined = stats
-      ? availabilityProblem(stats, pricer.ctx.thresholds, pricer.ctx.market.latestScan)
-      : { kind: 'nothing-listed' };
-    if (problem) {
+    const problems: (MarketIssue | undefined)[] = stats
+      ? [
+          availabilityProblem(stats, pricer.ctx.thresholds, pricer.ctx.market.latestScan),
+          supplyProblem(part.quote.units, stats.quantity),
+        ]
+      : [{ kind: 'nothing-listed' }];
+    for (const issue of problems) {
+      if (!issue) continue;
       materialStatuses.push('thin');
-      reasons.push({ item: part.itemId, issue: problem });
+      reasons.push({ item: part.itemId, issue });
     }
   }
 
   const count = recipe.output.count;
   const base = {
     recipe,
+    batch,
     cost,
     parts,
     sale,
@@ -167,7 +182,12 @@ function categoryOf(status: ItemStatus): Category {
   return 'thin';
 }
 
-export function recommend(pricer: Pricer, recipes: Recipe[], minProfit: number): Recommendations {
+export function recommend(
+  pricer: Pricer,
+  recipes: Recipe[],
+  minProfit: number,
+  batch = 1,
+): Recommendations {
   const groups: Record<Category, Evaluation[]> = {
     steady: [],
     vendor: [],
@@ -178,7 +198,7 @@ export function recommend(pricer: Pricer, recipes: Recipe[], minProfit: number):
   let unpriced = 0;
   let bound = 0;
   for (const recipe of recipes) {
-    const evaluation = evaluateRecipe(pricer, recipe);
+    const evaluation = evaluateRecipe(pricer, recipe, batch);
     if (!evaluation) {
       unpriced++;
     } else if (
@@ -196,5 +216,5 @@ export function recommend(pricer: Pricer, recipes: Recipe[], minProfit: number):
     list.sort((a, b) => (b.ifSold ?? -b.cost) - (a.ifSold ?? -a.cost));
   }
   groups['no-market'].sort((a, b) => a.cost - b.cost);
-  return { groups, unpriced, bound, considered: recipes.length };
+  return { groups, unpriced, bound, considered: recipes.length, batch };
 }

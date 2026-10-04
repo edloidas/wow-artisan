@@ -22,13 +22,28 @@ export type CostSource = 'auction' | 'vendor' | 'craft' | 'held' | 'unknown';
 export type Part = { itemId: number; count: number; quote: CostQuote };
 
 export type CostQuote = {
-  /** Copper per unit; undefined when no source can supply the item. */
+  /** Copper per unit, averaged over `units`; undefined when no source can supply the item. */
   unit?: number;
   source: CostSource;
+  /** Units the quote supplies: the whole batch, not one craft. */
+  units: number;
   classification?: Classification;
+  /** Auction: the cheapest listing prices climb from, and the units listed. */
+  cheapest?: number;
+  listed?: number;
+  /** Held: units taken from the holdings; `rest` supplies the others when the holdings fall short. */
+  held?: number;
+  rest?: CostQuote;
+  /** Some auction buy in the quote, here or in its reagents, needs more units than are listed. */
+  short?: boolean;
   recipe?: Recipe;
+  /** Craft: whole crafts made, and the units made beyond `units`, credited as `craftCost` says. */
+  crafts?: number;
+  surplus?: number;
   parts?: Part[];
 };
+
+export type Shortfall = { itemId: number; need: number; listed: number };
 
 export type SaleQuote = {
   /** Copper received per unit on the better route, after the auction cut. */
@@ -52,10 +67,12 @@ export type PricerContext = {
   listingHours?: ListingHours;
   names?: Map<number, string>;
   /**
-   * Items the player holds. They cost what selling them would net: the opportunity cost,
-   * so a craft's profit is what it earns above selling them as they are.
+   * Units the player holds, by item. They cost what selling them would net: the opportunity
+   * cost, so a craft's profit is what it earns above selling them as they are.
    */
-  held?: ReadonlySet<number>;
+  held?: ReadonlyMap<number, number>;
+  /** Holdings cost nothing, so every route that can reach one does; for finding which recipes can. */
+  freeHeld?: boolean;
 };
 
 export class Pricer {
@@ -107,53 +124,108 @@ export class Pricer {
     return vendor > 0 ? vendor * DEPOSIT_RATES[this.listingHours] : undefined;
   }
 
-  /** Cheapest way to get `units` of an item for one craft, per unit. */
+  /** Cheapest way to get `units` of an item, the holdings first. */
   cost(itemId: number, stack: number[] = [], units = 1): CostQuote {
-    if (this.ctx.held?.has(itemId)) return { unit: this.sale(itemId).unit ?? 0, source: 'held' };
     const key = `${itemId}:${units}`;
     const cached = this.costs.get(key);
     if (cached) return cached;
-    if (stack.includes(itemId)) return { source: 'unknown' };
+    if (stack.includes(itemId)) return { source: 'unknown', units };
 
-    const options: CostQuote[] = [];
-    const vendor = this.ctx.vendorBuy.get(itemId);
-    if (vendor !== undefined) options.push({ unit: vendor, source: 'vendor' });
-
-    const stats = this.ctx.market.prices.get(itemId);
-    const auction = buyPrice(stats, units, this.ctx.thresholds.maxSpread);
-    if (auction !== undefined) {
-      options.push({
-        unit: auction,
-        source: 'auction',
-        classification: this.classification(itemId),
-      });
-    }
-
-    if (stack.length < MAX_CRAFT_DEPTH) {
-      for (const recipe of this.producers.get(itemId) ?? []) {
-        const crafted = this.craftCost(recipe, [...stack, itemId]);
-        if (crafted.unit !== undefined) options.push(crafted);
-      }
-    }
-
-    const best = options.reduce<CostQuote | undefined>(
-      (a, b) => (a?.unit === undefined || (b.unit ?? Infinity) < a.unit ? b : a),
-      undefined,
-    ) ?? { source: 'unknown' };
+    const held = Math.min(this.ctx.held?.get(itemId) ?? 0, units);
+    const best =
+      held > 0
+        ? this.heldQuote(itemId, units, held, stack)
+        : (cheapest(this.options(itemId, stack, units)) ?? { source: 'unknown', units });
     if (stack.length === 0) this.costs.set(key, best);
     return best;
   }
 
-  /** Cost of one unit of the recipe's output. */
-  craftCost(recipe: Recipe, stack: number[] = []): CostQuote {
+  /**
+   * Every way to get `units` of an item, with the holdings' share among them: routes the market
+   * can supply first, then cheapest first.
+   */
+  routes(itemId: number, units = 1): CostQuote[] {
+    const held = Math.min(this.ctx.held?.get(itemId) ?? 0, units);
+    const routes = this.options(itemId, [], units);
+    if (held > 0) routes.push(this.heldQuote(itemId, units, held, []));
+    return routes.sort(compareQuotes);
+  }
+
+  /** `held` units at what selling them nets, the rest from the cheapest other route. */
+  private heldQuote(itemId: number, units: number, held: number, stack: number[]): CostQuote {
+    const value = this.ctx.freeHeld ? 0 : (this.sale(itemId).unit ?? 0);
+    if (held >= units) return { unit: value, source: 'held', units, held };
+    const rest = cheapest(this.options(itemId, stack, units - held)) ?? {
+      source: 'unknown',
+      units: units - held,
+    };
+    const quote: CostQuote = { source: 'held', units, held, rest };
+    if (rest.unit !== undefined) quote.unit = (held * value + rest.units * rest.unit) / units;
+    if (rest.short) quote.short = true;
+    return quote;
+  }
+
+  private options(itemId: number, stack: number[], units: number): CostQuote[] {
+    const options: CostQuote[] = [];
+    const vendor = this.ctx.vendorBuy.get(itemId);
+    if (vendor !== undefined) options.push({ unit: vendor, source: 'vendor', units });
+
+    const stats = this.ctx.market.prices.get(itemId);
+    const auction = buyPrice(stats, units, this.ctx.thresholds.maxSpread);
+    if (auction !== undefined) {
+      const quote: CostQuote = {
+        unit: auction.unit,
+        source: 'auction',
+        units,
+        cheapest: auction.cheapest,
+        listed: auction.listed,
+        classification: this.classification(itemId),
+      };
+      if (units > auction.listed) quote.short = true;
+      options.push(quote);
+    }
+
+    if (stack.length < MAX_CRAFT_DEPTH) {
+      for (const recipe of this.producers.get(itemId) ?? []) {
+        const crafts = Math.ceil(units / recipe.output.count);
+        const crafted = this.craftCost(recipe, [...stack, itemId], crafts, units);
+        if (crafted.unit !== undefined) options.push(crafted);
+      }
+    }
+    return options;
+  }
+
+  /**
+   * Cost per unit of `wanted` units of the recipe's output from `crafts` whole crafts, with the
+   * reagents bought for all of them. Units made beyond `wanted` are credited at what they sell for,
+   * but no more than they cost to make: a spare can offset its own cost, never pay for the rest.
+   */
+  craftCost(
+    recipe: Recipe,
+    stack: number[] = [],
+    crafts = 1,
+    wanted = crafts * recipe.output.count,
+  ): CostQuote {
     const parts: Part[] = recipe.reagents.map((r) => ({
       itemId: r.itemId,
       count: r.count,
-      quote: this.cost(r.itemId, stack, r.count),
+      quote: this.cost(r.itemId, stack, r.count * crafts),
     }));
-    if (parts.some((p) => p.quote.unit === undefined)) return { source: 'unknown', recipe, parts };
-    const total = parts.reduce((sum, p) => sum + (p.quote.unit ?? 0) * p.count, 0);
-    return { unit: total / recipe.output.count, source: 'craft', recipe, parts };
+    const base: CostQuote = { source: 'unknown', units: wanted, crafts, recipe, parts };
+    if (parts.some((p) => p.quote.short)) base.short = true;
+    if (parts.some((p) => p.quote.unit === undefined)) return base;
+    const perCraft = parts.reduce((sum, p) => sum + (p.quote.unit ?? 0) * p.count, 0);
+    const surplus = crafts * recipe.output.count - wanted;
+    const made = perCraft / recipe.output.count;
+    const credit =
+      surplus > 0 ? surplus * Math.min(this.sale(recipe.output.itemId).unit ?? 0, made) : 0;
+    const quote: CostQuote = {
+      ...base,
+      source: 'craft',
+      unit: (perCraft * crafts - credit) / wanted,
+    };
+    if (surplus > 0) quote.surplus = surplus;
+    return quote;
   }
 
   sale(itemId: number): SaleQuote {
@@ -176,11 +248,42 @@ export class Pricer {
   }
 }
 
+/**
+ * A route the market can fully supply beats one it can't, whatever the price: units past what is
+ * listed are priced by a guess, and on live data they can't be bought today at all.
+ */
+function compareQuotes(a: CostQuote, b: CostQuote): number {
+  if ((a.unit === undefined) !== (b.unit === undefined)) return a.unit === undefined ? 1 : -1;
+  if (Boolean(a.short) !== Boolean(b.short)) return a.short ? 1 : -1;
+  return (a.unit ?? 0) - (b.unit ?? 0);
+}
+
+function cheapest(options: CostQuote[]): CostQuote | undefined {
+  return options.reduce<CostQuote | undefined>(
+    (a, b) => (a === undefined || compareQuotes(b, a) < 0 ? b : a),
+    undefined,
+  );
+}
+
 /** Every reagent bought on the auction house, including inside crafted intermediates. */
 export function auctionParts(parts: Part[]): Part[] {
-  return parts.flatMap((part) => {
-    if (part.quote.source === 'auction') return [part];
-    if (part.quote.source === 'craft') return auctionParts(part.quote.parts ?? []);
-    return [];
-  });
+  return parts.flatMap((part) => bought(part.itemId, part.count, part.quote));
+}
+
+/** Auction buys in a quote that need more units than are listed. */
+export function shortfalls(itemId: number, quote: CostQuote): Shortfall[] {
+  return bought(itemId, 1, quote)
+    .filter((part) => part.quote.units > (part.quote.listed ?? Infinity))
+    .map((part) => ({
+      itemId: part.itemId,
+      need: Math.ceil(part.quote.units),
+      listed: part.quote.listed ?? 0,
+    }));
+}
+
+function bought(itemId: number, count: number, quote: CostQuote): Part[] {
+  if (quote.source === 'auction') return [{ itemId, count, quote }];
+  if (quote.source === 'craft') return auctionParts(quote.parts ?? []);
+  if (quote.source === 'held' && quote.rest) return bought(itemId, count, quote.rest);
+  return [];
 }

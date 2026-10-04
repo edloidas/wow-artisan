@@ -249,23 +249,41 @@ describe('recommend_crafts', () => {
     expect(data.market).toMatchObject({ latestScan: LATEST, scanAgeDays: 0, stale: false });
     expect(data.listingHours).toBe(24);
     const sword = row(data.groups.steady, 201);
-    // 4 bars smelted from 8 ore at 20c; listed at the cheapest 1900c, netting 95%.
+    // 4 bars smelted from 8 ore. Ore climbs from 20c toward 24c at the 250th of 500 units, so
+    // 8 average 20.064c: 160.512c in all. Listed at the cheapest 1900c, netting 95%.
     expect(sword).toMatchObject({
-      cost: 160,
+      batch: 1,
+      cost: 161,
       sellVia: 'auction',
       listUnit: 1900,
       netUnit: 1805,
       vendorUnit: 100,
-      ifSold: 1645,
-      ifVendored: -60,
+      ifSold: 1644,
+      ifVendored: -61,
       depositEstimate: 60,
-      ifUnsold: -120,
+      ifUnsold: -121,
       learnedFrom: 'trainer',
       warnings: [],
       recipeUrl: 'https://www.wowhead.com/forever/spell=201',
     });
     expect(sword.materials).toEqual([
       expect.objectContaining({ itemId: BAR, count: 4, unitCost: 40, source: 'craft' }),
+    ]);
+  });
+
+  test('crafts buys reagents for the batch, and a batch past the market is thin', async () => {
+    const data = await payload(await connect(), 'recommend_crafts', {
+      profession: 'blacksmithing',
+      craftWith: ['mining'],
+      crafts: 100,
+    });
+    expect(data.batch).toBe(100);
+    // 800 ore of the 500 listed: 500 average 24c, 300 more at the 28c top, so 25.5c each.
+    const sword = row(data.groups.thin, 201);
+    expect(sword).toMatchObject({ batch: 100, cost: 204 });
+    expect(sword.reasons).toEqual(['Copper Ore: need 800, only 500 listed']);
+    expect(sword.materials).toEqual([
+      expect.objectContaining({ itemId: BAR, count: 4, batchUnits: 400, source: 'craft' }),
     ]);
   });
 
@@ -423,12 +441,45 @@ describe('item_price', () => {
     expect(data.sell).toEqual({ via: 'auction', listUnit: 100, netUnit: 95, vendorUnit: 10 });
     expect(data.status).toEqual({ status: 'stable', reasons: [] });
     expect(data.stats?.history).toHaveLength(3);
-    expect(data.cheapestToObtain).toMatchObject({
-      unit: 40,
-      source: 'craft',
-      recipe: 'Smelt Copper',
-    });
+    expect(data.quantity).toBe(1);
+    expect(data.toObtain.map((r) => [r.source, r.unitCost])).toEqual([
+      ['craft', 40],
+      ['auction', 100],
+    ]);
+    expect(data.toObtain[0]).toMatchObject({ recipe: 'Smelt Copper', total: 40 });
     expect(data.warnings).toEqual([]);
+  });
+
+  test('prices a quantity, drawing on holdings before buying the rest', async () => {
+    const data = await payload(await connect(), 'item_price', {
+      item: 'Copper Bar',
+      quantity: 50,
+      holdings: [{ item: 'Copper Ore', quantity: 40 }],
+    });
+    const [craft] = data.toObtain;
+    expect(craft?.source).toBe('craft');
+    expect(craft?.materials).toEqual([
+      expect.objectContaining({ itemId: ORE, batchUnits: 100, held: 40, restSource: 'auction' }),
+    ]);
+  });
+
+  test('fromInventory without a saved inventory is a tool error, not an empty holding', async () => {
+    const c = await connect({ advisorFor: async () => Advisor.fromData({ game, market }) });
+    expect(
+      errorText(await call(c, 'item_price', { item: 'Copper Bar', fromInventory: true })),
+    ).toBe('No Syndicator SavedVariables found; enable Syndicator, log in and /reload');
+  });
+
+  test('a quantity past what is listed says so on every route', async () => {
+    const data = await payload(await connect(), 'item_price', {
+      item: 'Copper Bar',
+      quantity: 400,
+    });
+    // 800 ore of 500 listed, or 400 bars of 300: neither can be fully bought
+    expect(data.toObtain.map((r) => [r.source, r.reasons])).toEqual([
+      ['craft', ['Copper Ore: need 800, only 500 listed']],
+      ['auction', ['Copper Bar: need 400, only 300 listed']],
+    ]);
   });
 
   test('an unknown item is a tool error', async () => {

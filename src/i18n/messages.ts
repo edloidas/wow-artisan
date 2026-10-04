@@ -40,6 +40,9 @@ export type Messages = {
     gain: string;
     crafts: string;
     totalGain: string;
+    route: string;
+    unitCost: string;
+    total: string;
   };
   plan: string;
   anySkill: string;
@@ -55,6 +58,17 @@ export type Messages = {
   more: (count: number) => string;
   risk: string;
   crafted: (recipe: string) => string;
+  /** An auction buy whose average climbed above the cheapest listing. */
+  auctionFrom: (cheapest: string, listed: number) => string;
+  /** Held units, with how the rest is got. */
+  heldPart: (held: number, rest: string) => string;
+  /** Units a route makes beyond the need, credited at what they sell for, up to their cost. */
+  spare: (units: string) => string;
+  batch: (crafts: number) => string;
+  obtainTitle: (item: string, quantity: number) => string;
+  cheapestRoute: string;
+  noRoute: string;
+  obtainNotes: string[];
   uses: (list: string) => string;
   noGainfulRecipe: (minProfit: number) => string;
   sellAsIs: string;

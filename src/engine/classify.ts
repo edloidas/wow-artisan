@@ -36,6 +36,7 @@ export type MarketIssue =
   | { kind: 'missing-from-scan'; lastSeen: string }
   | { kind: 'few-seen'; quantity: number; date: string }
   | { kind: 'few-listed'; quantity: number }
+  | { kind: 'short-supply'; need: number; listed: number }
   | { kind: 'rarely-scanned'; seen: number; scans: number }
   | { kind: 'undercut'; percent: number }
   | { kind: 'swing'; ratio: number }
@@ -55,28 +56,53 @@ export function referencePrice(stats: PriceStats | undefined): number | undefine
   return median(recent) ?? stats.min;
 }
 
-/** Units on the market, as a multiple of what one purchase needs, to trust the cheapest listing. */
-const DEEP_MARKET = 10;
+/**
+ * Least rise from the cheapest listing to the unit in the middle of the market, as a share of
+ * the cheapest, when no listing median says how steep the ladder is. A guess: local scans keep
+ * only the cheapest price, and listings above it are never all at that price.
+ */
+export const MIN_LADDER_RISE = 0.2;
+
+export type AuctionBuy = {
+  /** Copper per unit, averaged over every unit bought. */
+  unit: number;
+  /** Where prices start: the cheapest listing, or the usual price when that one is an outlier. */
+  cheapest: number;
+  /** Units on the market. */
+  listed: number;
+};
 
 /**
- * What buying `units` costs per unit right now. Scans keep no price ladder, only the cheapest
- * listing and the total units on offer, so a small buy from a deep market takes the cheapest
- * listing, unless it is an outlier far under the usual price; anything else pays the usual price.
+ * What buying `units` costs per unit, averaged. Scans keep no price ladder, only the cheapest
+ * listing and the units on offer, so the ladder is modelled: prices climb linearly from the
+ * cheapest listing to the listing median (AHledger) at the middle unit, or to the usual price
+ * and at least `MIN_LADDER_RISE` above the cheapest when no median is known. Units beyond what
+ * is listed cost the top of the ladder. A cheapest listing far under the usual price is likely
+ * a lone unit, so the ladder starts at the usual price instead.
  */
 export function buyPrice(
   stats: PriceStats | undefined,
   units = 1,
   maxSpread = DEFAULT_THRESHOLDS.maxSpread,
-): number | undefined {
+): AuctionBuy | undefined {
   if (!stats || stats.quantity <= 0) return undefined;
   const reference = referencePrice(stats);
-  if (stats.min !== undefined && stats.quantity >= units * DEEP_MARKET) {
-    const outlier = reference !== undefined && (reference - stats.min) / reference > maxSpread;
-    if (!outlier) return stats.min;
+  const outlier =
+    stats.min !== undefined &&
+    reference !== undefined &&
+    (reference - stats.min) / reference > maxSpread;
+  const start = stats.min === undefined || outlier ? reference : stats.min;
+  if (start === undefined) return undefined;
+  const middle =
+    stats.median !== undefined
+      ? Math.max(stats.median, start)
+      : Math.max(reference ?? start, start * (1 + MIN_LADDER_RISE));
+  const listed = stats.quantity;
+  if (units <= listed) {
+    return { unit: start + ((middle - start) * units) / listed, cheapest: start, listed };
   }
-  if (stats.median !== undefined) return stats.median;
-  if (stats.min === undefined) return reference;
-  return reference === undefined ? stats.min : Math.max(stats.min, reference);
+  const top = 2 * middle - start;
+  return { unit: (listed * middle + (units - listed) * top) / units, cheapest: start, listed };
 }
 
 /** What a new listing can ask: no more than the cheapest competitor or the usual price. */
@@ -105,6 +131,11 @@ export function availabilityProblem(
       : { kind: 'few-listed', quantity: stats.quantity };
   }
   return undefined;
+}
+
+/** A batch that needs more units than the market shows; they are priced at the ladder's top. */
+export function supplyProblem(need: number, listed: number): MarketIssue | undefined {
+  return need > listed ? { kind: 'short-supply', need: Math.ceil(need), listed } : undefined;
 }
 
 /**

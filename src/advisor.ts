@@ -1,6 +1,14 @@
 import { DEFAULT_THRESHOLDS, type Thresholds } from './engine/classify.ts';
-import { type Holding, heldUses, holdingSale, type MaterialsReport } from './engine/materials.ts';
 import {
+  type Holding,
+  heldCandidates,
+  heldUses,
+  holdingSale,
+  type MaterialsReport,
+  mergeHoldings,
+} from './engine/materials.ts';
+import {
+  type CostQuote,
   DEFAULT_LISTING_HOURS,
   isListingHours,
   type ListingHours,
@@ -118,7 +126,7 @@ export class Advisor {
     return [...own, ...helpers];
   }
 
-  pricer(scope: Scope, held?: ReadonlySet<number>): Pricer {
+  pricer(scope: Scope, held?: ReadonlyMap<number, number>): Pricer {
     const ctx = {
       game: this.game,
       market: this.market,
@@ -131,10 +139,11 @@ export class Advisor {
     return new Pricer(this.inventory ? { ...ctx, names: this.inventory.names } : ctx);
   }
 
-  recommend(scope: Scope, minProfit = 0): { pricer: Pricer; result: Recommendations } {
+  /** Recipes worth crafting `batch` times from bought or crafted reagents. */
+  recommend(scope: Scope, minProfit = 0, batch = 1): { pricer: Pricer; result: Recommendations } {
     const pricer = this.pricer(scope);
     const recipes = selectRecipes(this.game.recipes, scope);
-    return { pricer, result: recommend(pricer, recipes, minProfit) };
+    return { pricer, result: recommend(pricer, recipes, minProfit, batch) };
   }
 
   /**
@@ -143,20 +152,42 @@ export class Advisor {
    */
   materials(
     scope: Scope,
-    holdings: Holding[],
+    given: Holding[],
     minProfit = 1,
   ): { pricer: Pricer; report: MaterialsReport } {
-    const pricer = this.pricer(scope, new Set(holdings.map((h) => h.itemId)));
-    const result = recommend(pricer, selectRecipes(this.game.recipes, scope), minProfit);
+    const holdings = mergeHoldings(given);
+    const pricer = this.pricer(scope, quantities(holdings));
+    const result = heldCandidates(pricer, selectRecipes(this.game.recipes, scope));
     // Held items are priced from a pricer that doesn't treat them as held.
     const market = this.pricer(scope);
     return {
       pricer,
       report: {
         holdings: holdings.map((holding) => holdingSale(market, holding)),
-        groups: heldUses(result, holdings),
+        groups: heldUses(pricer, result, holdings, minProfit),
       },
     };
+  }
+
+  /** Every way to get `quantity` of an item, cheapest first, drawing on the holdings. */
+  obtain(
+    scope: Scope,
+    itemId: number,
+    quantity: number,
+    holdings: Holding[] = [],
+  ): { pricer: Pricer; routes: CostQuote[] } {
+    const merged = mergeHoldings(holdings);
+    const pricer = this.pricer(scope, merged.length > 0 ? quantities(merged) : undefined);
+    return { pricer, routes: pricer.routes(itemId, quantity) };
+  }
+
+  /** Everything in the saved inventory, most units first; throws when none was read. */
+  inventoryHoldings(): Holding[] {
+    if (!this.inventory)
+      throw new Error('No Syndicator SavedVariables found; enable Syndicator, log in and /reload');
+    return [...this.inventory.totals]
+      .map(([itemId, quantity]) => ({ itemId, quantity }))
+      .sort((a, b) => b.quantity - a.quantity);
   }
 
   /** Inventory items some in-scope recipe consumes. */
@@ -204,6 +235,11 @@ export class Advisor {
     if (!match) throw new Error(`No item matches '${query}'`);
     return match.itemId;
   }
+}
+
+/** Expects merged holdings. */
+function quantities(holdings: Holding[]): Map<number, number> {
+  return new Map(holdings.map((h) => [h.itemId, h.quantity]));
 }
 
 /** What limits the player's own recipes: skill, and whether plans are available. */

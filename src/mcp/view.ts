@@ -129,6 +129,10 @@ function expandable(tbody: HTMLElement, row: HTMLElement, detail: HTMLElement, s
   tbody.append(row, extra);
 }
 
+function batchText(data: Recommendations): string {
+  return data.batch > 1 ? ` · reagents bought for ${data.batch} crafts` : '';
+}
+
 function rowDetail(row: Row): HTMLElement {
   const supply = row.productMarket;
   return h(
@@ -152,6 +156,12 @@ function rowDetail(row: Row): HTMLElement {
           money(m.unitCost),
           ` each, ${m.source}`,
           m.craftedWith ? ` (${m.craftedWith})` : '',
+          m.restSource ? ` (${Math.round(m.held ?? 0)} held, the rest ${m.restSource})` : '',
+          ...(m.cheapestUnit !== undefined &&
+          m.unitCost !== undefined &&
+          m.unitCost > m.cheapestUnit
+            ? [' (from ', money(m.cheapestUnit), `, ${m.listed} listed)`]
+            : []),
         ),
       ),
     ),
@@ -263,7 +273,7 @@ function renderRecommendations(data: Recommendations): Child[] {
     h(
       'div',
       { class: 'muted' },
-      `${data.considered} recipes considered · ${data.unpriced} unpriced · ${data.boundOnPickup} bind on pickup · ${data.listingHours}h listings. Click a row for materials and risks.`,
+      `${data.considered} recipes considered · ${data.unpriced} unpriced · ${data.boundOnPickup} bind on pickup · ${data.listingHours}h listings${batchText(data)}. Click a row for materials and risks.`,
     ),
     ...sections,
   ];

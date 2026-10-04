@@ -7,6 +7,7 @@ import {
   type Part,
   type Pricer,
   type SaleQuote,
+  shortfalls,
 } from './engine/pricer.ts';
 import type { Category, Evaluation, Recommendations } from './engine/recommend.ts';
 import { en, type Lang, reasonText } from './i18n/index.ts';
@@ -23,6 +24,14 @@ export type MaterialLine = {
   unitCost?: number;
   source: CostQuote['source'];
   craftedWith?: string;
+  /** Units the batch takes, over all its crafts. */
+  batchUnits: number;
+  /** Auction: the cheapest listing the price climbs from, and the units listed. */
+  cheapestUnit?: number;
+  listed?: number;
+  /** Units taken from the holdings, and how the rest is got when they fall short. */
+  held?: number;
+  restSource?: CostQuote['source'];
 };
 
 export function marketJson(market: Market, now = new Date()) {
@@ -59,18 +68,23 @@ function copper(value: number | undefined): number | undefined {
 }
 
 export function partsJson(pricer: Pricer, parts: Part[], lang: Lang = 'en'): MaterialLine[] {
-  return parts.map((part) => {
+  return parts.map(({ itemId, count, quote }) => {
     const line: MaterialLine = {
-      itemId: part.itemId,
-      name: pricer.name(part.itemId),
-      url: wowheadUrl('item', part.itemId, lang),
-      count: part.count,
-      source: part.quote.source,
+      itemId,
+      name: pricer.name(itemId),
+      url: wowheadUrl('item', itemId, lang),
+      count,
+      source: quote.source,
+      batchUnits: quote.units,
     };
-    const local = localName(pricer, part.itemId, lang);
+    const local = localName(pricer, itemId, lang);
     if (local) line.localName = local;
-    if (part.quote.unit !== undefined) line.unitCost = Math.round(part.quote.unit);
-    if (part.quote.recipe) line.craftedWith = part.quote.recipe.name;
+    if (quote.unit !== undefined) line.unitCost = Math.round(quote.unit);
+    if (quote.recipe) line.craftedWith = quote.recipe.name;
+    if (quote.cheapest !== undefined) line.cheapestUnit = Math.round(quote.cheapest);
+    if (quote.listed !== undefined) line.listed = quote.listed;
+    if (quote.held !== undefined) line.held = quote.held;
+    if (quote.rest) line.restSource = quote.rest.source;
     return line;
   });
 }
@@ -96,6 +110,7 @@ export function evaluationJson(pricer: Pricer, e: Evaluation, lang: Lang = 'en')
     yellow: e.recipe.yellow,
     grey: e.recipe.grey,
     category: e.category,
+    batch: e.batch,
     cost: Math.round(e.cost),
     sellVia: e.sale.via,
     listUnit: copper(e.sale.auctionGross),
@@ -133,6 +148,7 @@ export function recommendationsJson(
     warnings: marketWarnings(pricer.ctx.market, now),
     listingHours: hours,
     considered: r.considered,
+    batch: r.batch,
     unpriced: r.unpriced,
     boundOnPickup: r.bound,
     groups,
@@ -143,6 +159,8 @@ export function recommendationsJson(
 function evaluationNotes(hours: ListingHours): string[] {
   return [
     'Prices are copper per unit (10000 = 1g); cost, ifSold and ifVendored are per craft.',
+    LADDER_NOTE,
+    'materials[].count is per craft, batchUnits over the whole batch.',
     'listUnit is the auction asking price per unit, before the 5% cut: the number to list at. netUnit is what one unit brings on the sellVia route, after the cut.',
     'vendorUnit is what a merchant pays per unit (0: no vendor price in the game data). ifVendored is the profit per craft if every unit goes to a merchant. ifUnsold (auction rows) is ifVendored minus one lost deposit: the listing expires once, then the units go to a merchant.',
     'ifSold assumes every unit sells; no source records sales, so it is not a forecast. Categories describe asking prices and supply; vendor means the product goes to a merchant, with no auction risk.',
@@ -150,6 +168,73 @@ function evaluationNotes(hours: ListingHours): string[] {
     `depositEstimate is ${Math.round(DEPOSIT_RATES[hours] * 100)}% of the vendor price per unit for a ${hours}h listing (Classic Era rates, not yet confirmed on Forever); refunded on sale, so ifSold excludes it, and lost when the auction expires. warnings name rows where one expired listing costs more than a sale earns, or the auction adds less than a deposit over the vendor price.`,
     'Auction prices for ahledger markets: data by AHledger (https://ahledger.com).',
   ];
+}
+
+const LADDER_NOTE =
+  'Reagents are bought for batch crafts. A bought unitCost is averaged over the batch: it climbs from cheapestUnit as the batch takes a larger share of the listed units, and past what is listed those units cost the top of that climb, with a "need N, only M listed" reason.';
+
+type RouteJson = {
+  source: CostQuote['source'];
+  unitCost: number | undefined;
+  total: number | undefined;
+  recipe: string | undefined;
+  recipeUrl: string | undefined;
+  crafts: number | undefined;
+  surplus: number | undefined;
+  cheapestUnit: number | undefined;
+  listed: number | undefined;
+  held: number | undefined;
+  rest: RouteJson | undefined;
+  materials: MaterialLine[] | undefined;
+};
+
+/** Every way to get `wanted`, as `obtain` prints them. */
+export function obtainJson(
+  pricer: Pricer,
+  wanted: { itemId: number; quantity: number },
+  routes: CostQuote[],
+  lang: Lang = 'en',
+  now = new Date(),
+) {
+  const route = (quote: CostQuote): RouteJson => ({
+    source: quote.source,
+    unitCost: copper(quote.unit),
+    total: copper(quote.unit === undefined ? undefined : quote.unit * quote.units),
+    recipe: quote.recipe?.name,
+    recipeUrl: quote.recipe && wowheadUrl('spell', quote.recipe.spellId, lang),
+    crafts: quote.crafts,
+    surplus: quote.surplus,
+    cheapestUnit: copper(quote.cheapest),
+    listed: quote.listed,
+    held: quote.held,
+    rest: quote.rest && route(quote.rest),
+    materials: quote.parts && partsJson(pricer, quote.parts, lang),
+  });
+  return {
+    market: marketJson(pricer.ctx.market, now),
+    warnings: marketWarnings(pricer.ctx.market, now),
+    item: {
+      itemId: wanted.itemId,
+      name: pricer.name(wanted.itemId),
+      localName: localName(pricer, wanted.itemId, lang),
+      url: wowheadUrl('item', wanted.itemId, lang),
+    },
+    quantity: wanted.quantity,
+    routes: routes
+      .filter((r) => r.unit !== undefined)
+      .map((r) => ({
+        ...route(r),
+        reasons: shortfalls(wanted.itemId, r).map(
+          ({ itemId, need, listed }) =>
+            `${pricer.name(itemId)}: ${en.issue({ kind: 'short-supply', need, listed })}`,
+        ),
+      })),
+    notes: [
+      'Routes the market can fully supply come first, then cheapest first; a route with reasons needs more units than are listed, priced by a guess and maybe not for sale today. unitCost is copper per unit averaged over quantity, total over all of it; materials[].count is per craft of the route recipe, and crafts are whole, with surplus units credited at what they sell for, up to what they cost to make.',
+      LADDER_NOTE,
+      'held units cost what selling them nets; rest is how the units beyond the holdings are got.',
+    ],
+  };
 }
 
 /** Units on the market, and for local scans which day that count is from. */
